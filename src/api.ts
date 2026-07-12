@@ -3,7 +3,8 @@ import type {
   JobSummary,
   ManualControls,
   OutputFormat,
-  Preset
+  Preset,
+  UploadConfig
 } from "./types";
 
 export type { JobStatus, JobSummary } from "./types";
@@ -17,10 +18,21 @@ export class ApiError extends Error {
 
 async function readJson<T>(response: Response): Promise<T> {
   if (!response.ok) {
-    const body = (await response.json().catch(() => null)) as { error?: string } | null;
-    throw new ApiError(response.status, body?.error ?? "The request could not be completed.");
+    throw await responseError(response);
   }
   return response.json() as Promise<T>;
+}
+
+async function responseError(response: Response): Promise<ApiError> {
+  const body = (await response.json().catch(() => null)) as { error?: string } | null;
+  return new ApiError(
+    response.status,
+    body?.error ?? "The request could not be completed."
+  );
+}
+
+export async function getUploadConfig(): Promise<UploadConfig> {
+  return readJson<UploadConfig>(await fetch("/api/config"));
 }
 
 export async function createJob(
@@ -84,4 +96,29 @@ export async function retryTask(
 
 export function getDownloadUrl(jobId: string, taskId: string, format: OutputFormat): string {
   return `/api/jobs/${encodeURIComponent(jobId)}/tasks/${encodeURIComponent(taskId)}/download?format=${format}`;
+}
+
+export async function downloadResult(
+  jobId: string,
+  taskId: string,
+  format: OutputFormat,
+  signal?: AbortSignal
+): Promise<void> {
+  const response = await fetch(getDownloadUrl(jobId, taskId, format), { signal });
+  if (!response.ok) throw await responseError(response);
+  const contentType = response.headers.get("content-type") ?? "";
+  if (!contentType.startsWith("image/")) {
+    throw new ApiError(response.status, "The downloaded result was not an image.");
+  }
+  const blob = await response.blob();
+  if (blob.size === 0) throw new ApiError(response.status, "The downloaded result was empty.");
+  const objectUrl = URL.createObjectURL(blob);
+  try {
+    const link = document.createElement("a");
+    link.href = objectUrl;
+    link.download = `photo-enhanced.${format}`;
+    link.click();
+  } finally {
+    URL.revokeObjectURL(objectUrl);
+  }
 }

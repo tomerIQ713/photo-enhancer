@@ -1,7 +1,7 @@
 import "@testing-library/jest-dom/vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { StrictMode } from "react";
 import { App } from "./App";
 import * as api from "./api";
@@ -12,6 +12,8 @@ vi.mock("./api", () => ({
   createJob: vi.fn(),
   getJob: vi.fn(),
   retryTask: vi.fn(),
+  getUploadConfig: vi.fn(),
+  downloadResult: vi.fn(),
   getDownloadUrl: vi.fn((jobId: string, taskId: string, format: string) =>
     `/api/jobs/${jobId}/tasks/${taskId}/download?format=${format}`
   )
@@ -47,10 +49,20 @@ function mockJobStatus(status: Partial<JobTask> & Pick<JobTask, "status">) {
 describe("Photo enhancer workbench", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(api.getUploadConfig).mockResolvedValue({
+      maxFileBytes: 10 * 1024 * 1024,
+      maxPixels: 25_000_000,
+      maxBatchSize: 5,
+      supportedMimeTypes: ["image/jpeg", "image/png", "image/webp", "image/avif"]
+    });
     vi.mocked(api.createJob).mockResolvedValue({
       jobId: "job-1",
       tasks: [{ taskId: "task-1", status: "queued" }]
     });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
   });
 
   it("shows both presets after a file is selected", async () => {
@@ -476,6 +488,48 @@ describe("Photo enhancer workbench", () => {
     expect(screen.getByText("Drop images here or press Enter to browse")).toBeVisible();
   });
 
+  it("renders the unavailable state when retry returns 410", async () => {
+    const user = userEvent.setup();
+    mockJobStatus({ status: "failed", error: "Processing failed" });
+    vi.mocked(api.retryTask).mockRejectedValueOnce(Object.assign(new Error("Job expired"), { status: 410 }));
+    render(<App />);
+
+    await user.upload(screen.getByLabelText(/upload photos/i), pngFile);
+    await user.click(screen.getByRole("button", { name: /enhance photos/i }));
+    await user.click(await screen.findByRole("button", { name: "Retry portrait.png" }));
+
+    expect(await screen.findByRole("heading", { name: "Result unavailable or expired" })).toBeVisible();
+    expect(screen.getByRole("button", { name: /enhance another/i })).toBeVisible();
+  });
+
+  it("renders the unavailable state when a completed preview reports an image error", async () => {
+    const user = userEvent.setup();
+    mockJobStatus({ status: "complete", result: { format: "png", size: 12, previewUrl: "/expired-preview" } });
+    render(<App />);
+
+    await user.upload(screen.getByLabelText(/upload photos/i), pngFile);
+    await user.click(screen.getByRole("button", { name: /enhance photos/i }));
+    const enhanced = await screen.findByAltText(/enhanced/i);
+    fireEvent.error(enhanced);
+
+    expect(await screen.findByRole("heading", { name: "Result unavailable or expired" })).toBeVisible();
+    expect(screen.getByRole("button", { name: /enhance another/i })).toBeVisible();
+  });
+
+  it("renders the unavailable state when a download request returns 410", async () => {
+    const user = userEvent.setup();
+    mockJobStatus({ status: "complete", result: { format: "png", size: 12, previewUrl: "/preview" } });
+    vi.mocked(api.downloadResult).mockRejectedValueOnce(Object.assign(new Error("Result expired"), { status: 410 }));
+    render(<App />);
+
+    await user.upload(screen.getByLabelText(/upload photos/i), pngFile);
+    await user.click(screen.getByRole("button", { name: /enhance photos/i }));
+    await user.click(await screen.findByRole("link", { name: /download png/i }));
+
+    expect(await screen.findByRole("heading", { name: "Result unavailable or expired" })).toBeVisible();
+    expect(screen.getByRole("button", { name: /enhance another/i })).toBeVisible();
+  });
+
   it("ignores stale bitmap validation and keeps current selection errors authoritative", async () => {
     const firstFile = new File(["first"], "first.png", { type: "image/png" });
     const secondFile = new File(["second"], "second.png", { type: "image/png" });
@@ -489,7 +543,17 @@ describe("Photo enhancer workbench", () => {
     const onFilesSelected = vi.fn();
     const onValidationError = vi.fn();
     const { container } = render(
-      <UploadDropzone files={[]} onFilesSelected={onFilesSelected} onValidationError={onValidationError} />
+      <UploadDropzone
+        files={[]}
+        config={{
+          maxFileBytes: 10 * 1024 * 1024,
+          maxPixels: 25_000_000,
+          maxBatchSize: 5,
+          supportedMimeTypes: ["image/jpeg", "image/png", "image/webp", "image/avif"]
+        }}
+        onFilesSelected={onFilesSelected}
+        onValidationError={onValidationError}
+      />
     );
     const input = container.querySelector<HTMLInputElement>("input[type=file]");
     if (!input) throw new Error("Upload input missing");
@@ -515,7 +579,17 @@ describe("Photo enhancer workbench", () => {
     const onFilesSelected = vi.fn();
     const onValidationError = vi.fn();
     const { container } = render(
-      <UploadDropzone files={[]} onFilesSelected={onFilesSelected} onValidationError={onValidationError} />
+      <UploadDropzone
+        files={[]}
+        config={{
+          maxFileBytes: 10 * 1024 * 1024,
+          maxPixels: 25_000_000,
+          maxBatchSize: 5,
+          supportedMimeTypes: ["image/jpeg", "image/png", "image/webp", "image/avif"]
+        }}
+        onFilesSelected={onFilesSelected}
+        onValidationError={onValidationError}
+      />
     );
     const input = container.querySelector<HTMLInputElement>("input[type=file]");
     if (!input) throw new Error("Upload input missing");
@@ -525,7 +599,7 @@ describe("Photo enhancer workbench", () => {
     resolveFirst({ width: 5_001, height: 5_001, close: vi.fn() });
 
     await waitFor(() => expect(onValidationError).toHaveBeenCalledWith(
-      "Unsupported format. Supported formats are JPEG, PNG, WebP, and AVIF."
+      "Unsupported format. Supported formats are JPEG, PNG, WebP, or AVIF."
     ));
     expect(onValidationError).toHaveBeenCalledTimes(1);
     expect(onFilesSelected).not.toHaveBeenCalled();
@@ -655,6 +729,27 @@ describe("Photo enhancer workbench", () => {
 
     expect(screen.getByRole("alert")).toHaveTextContent(/supported formats/i);
     expect(screen.queryByText("bad.gif")).not.toBeInTheDocument();
+  });
+
+  it("reflects effective upload limits from the public config endpoint", async () => {
+    const user = userEvent.setup();
+    const customConfig = {
+      maxFileBytes: 2 * 1024 * 1024,
+      maxPixels: 4_000_000,
+      maxBatchSize: 2,
+      supportedMimeTypes: ["image/png"]
+    };
+    const onFilesSelected = vi.fn();
+    const onValidationError = vi.fn();
+    render(<UploadDropzone files={[]} config={customConfig} onFilesSelected={onFilesSelected} onValidationError={onValidationError} />);
+
+    expect(await screen.findByText(/up to 2 MB · 4 million pixels/i)).toBeVisible();
+    fireEvent.drop(screen.getByLabelText(/upload photos/i), {
+      dataTransfer: { files: [new File([new Uint8Array(2 * 1024 * 1024 + 1)], "too-large.png", { type: "image/png" })] }
+    });
+    await waitFor(() => expect(onValidationError).toHaveBeenCalledWith("File too large. Each photo must be 2 MB or smaller."));
+    expect(screen.queryByText("too-large.png")).not.toBeInTheDocument();
+    void user;
   });
 
   it("shows real upload progress while a job request is pending", async () => {

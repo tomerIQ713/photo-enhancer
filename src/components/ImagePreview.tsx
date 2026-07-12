@@ -7,9 +7,10 @@ interface ImagePreviewProps {
   taskError?: string;
   onEnhanceAnother?: () => void;
   resultUnavailable?: boolean;
+  onResultUnavailable?: () => void;
 }
 
-export function ImagePreview({ sourceFile, previewUrl, taskStatus, taskError, onEnhanceAnother, resultUnavailable = false }: ImagePreviewProps) {
+export function ImagePreview({ sourceFile, previewUrl, taskStatus, taskError, onEnhanceAnother, resultUnavailable = false, onResultUnavailable }: ImagePreviewProps) {
   const [comparison, setComparison] = useState(50);
   const [originalObjectUrl, setOriginalObjectUrl] = useState<string>();
   const [zoom, setZoom] = useState(1);
@@ -28,19 +29,6 @@ export function ImagePreview({ sourceFile, previewUrl, taskStatus, taskError, on
 
   useEffect(() => { setComparison(50); setZoom(1); }, [previewUrl, sourceFile]);
 
-  if (taskStatus === "failed") {
-    return (
-      <section className="preview-stage failed-preview" aria-labelledby="preview-heading">
-        <div className="preview-header">
-          <div><p className="section-kicker">Preview</p><h2 id="preview-heading">Enhancement failed</h2></div>
-          <span className="preview-status">Failed</span>
-        </div>
-        <p className="preview-error" role="alert">{taskError ?? "This photo could not be enhanced."}</p>
-        {originalObjectUrl && <img className="single-preview-image" src={originalObjectUrl} alt="Original photo" />}
-      </section>
-    );
-  }
-
   if (resultUnavailable || (taskStatus === "complete" && !previewUrl)) {
     return (
       <section className="preview-stage unavailable-preview" aria-labelledby="preview-heading">
@@ -50,6 +38,19 @@ export function ImagePreview({ sourceFile, previewUrl, taskStatus, taskError, on
         </div>
         <p className="preview-error" role="status">The completed result is no longer available, so there is no preview or download for this task.</p>
         {onEnhanceAnother && <button className="primary-button" type="button" onClick={onEnhanceAnother}>Enhance another</button>}
+      </section>
+    );
+  }
+
+  if (taskStatus === "failed") {
+    return (
+      <section className="preview-stage failed-preview" aria-labelledby="preview-heading">
+        <div className="preview-header">
+          <div><p className="section-kicker">Preview</p><h2 id="preview-heading">Enhancement failed</h2></div>
+          <span className="preview-status">Failed</span>
+        </div>
+        <p className="preview-error" role="alert">{taskError ?? "This photo could not be enhanced."}</p>
+        {originalObjectUrl && <img className="single-preview-image" src={originalObjectUrl} alt="Original photo" />}
       </section>
     );
   }
@@ -75,8 +76,8 @@ export function ImagePreview({ sourceFile, previewUrl, taskStatus, taskError, on
         <span className="preview-status">{isComplete ? "Ready to review" : "Working"}</span>
       </div>
         <div className="comparison" style={{ "--comparison": `${comparison}%`, "--zoom": zoom } as CSSProperties}>
-        <img className="comparison-image base-image" src={before} alt="Original photo" />
-        <div className="enhanced-clip"><img className="comparison-image" src={after} alt="Enhanced photo" /></div>
+          <img className="comparison-image base-image" src={before} alt="Original photo" onError={previewUrl ? onResultUnavailable : undefined} />
+          <div className="enhanced-clip"><img className="comparison-image" src={after} alt="Enhanced photo" onError={previewUrl ? onResultUnavailable : undefined} /></div>
         {isComplete && <span className="comparison-label label-before">Before</span>}
         {isComplete && <span className="comparison-label label-after">After</span>}
       </div>

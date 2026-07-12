@@ -110,6 +110,30 @@ describe("JobProcessor", () => {
     });
   });
 
+  it.each([
+    [5_000_000, 2_500, 2_000],
+    [12_000_000, 4_000, 3_000]
+  ])("processes a %s-pixel Auto Enhance image within the input limit", async (_pixels, width, height) => {
+    const directory = createDirectory();
+    const store = new JobStore({ rootDir: path.join(directory, "jobs") });
+    const pipeline = new DelayedPipeline();
+    const job = store.createFromBuffers(
+      [{
+        id: `auto-${width}`,
+        buffer: Buffer.from("valid-enough-for-test-pipeline"),
+        metadata: { format: "png", width, height, size: 32 }
+      }],
+      "auto",
+      controls
+    );
+
+    new JobProcessor(store, pipeline).startJob(job.id);
+    await waitForComplete(store, job.id);
+
+    expect(pipeline.calls).toBe(1);
+    expect(store.get(job.id)?.tasks[0].status).toBe("complete");
+  });
+
   it("fails output buffers over the configured byte limit", async () => {
     const directory = createDirectory();
     const store = new JobStore({ rootDir: path.join(directory, "jobs") });

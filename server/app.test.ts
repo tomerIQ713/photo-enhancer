@@ -9,7 +9,11 @@ import { afterEach, describe, expect, it } from "vitest";
 import { createApp } from "./app";
 import { JobStore } from "./jobs/job-store";
 import { RateLimiter, UploadMemoryBudget } from "./admission";
-import { MAX_FILE_BYTES, MAX_PIXELS, MAX_UPLOAD_MEMORY_RESERVATION_BYTES } from "./config";
+import {
+  MAX_FILE_BYTES,
+  MAX_PIXELS,
+  MAX_UPLOAD_MEMORY_RESERVATION_BYTES
+} from "./config";
 import type { ManualControls, OutputFormat, Preset } from "./types";
 
 const defaultControls: ManualControls = {
@@ -172,6 +176,69 @@ describe("photo jobs API", () => {
     app.close();
   });
 
+  it("holds upload admission through deferred validation and persistence", async () => {
+    const directory = createTempDirectory();
+    const budget = new UploadMemoryBudget({
+      maxBytes: MAX_UPLOAD_MEMORY_RESERVATION_BYTES,
+      reservationBytes: MAX_UPLOAD_MEMORY_RESERVATION_BYTES
+    });
+    let resolveValidation: (metadata: {
+      format: "png";
+      width: number;
+      height: number;
+      size: number;
+    }) => void = () => undefined;
+    const validation = new Promise<{
+      format: "png";
+      width: number;
+      height: number;
+      size: number;
+    }>((resolve) => {
+      resolveValidation = resolve;
+    });
+    const app = createApp({
+      store: new JobStore({ rootDir: path.join(directory, "jobs") }),
+      uploadMemoryBudget: budget,
+      validateUploadFn: async (file) => {
+        await validation;
+        return {
+          format: "png",
+          width: 4,
+          height: 3,
+          size: file.size
+        };
+      },
+      cleanupIntervalMs: 60_000
+    });
+
+    const firstUpload = request(app)
+      .post("/api/jobs")
+      .attach("files", await createSamplePng(), {
+        filename: "deferred.png",
+        contentType: "image/png"
+      })
+      .then((response: { status: number }) => response);
+
+    for (let attempt = 0; attempt < 20 && budget.reservedBytes === 0; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 1));
+    }
+    expect(budget.reservedBytes).toBe(MAX_UPLOAD_MEMORY_RESERVATION_BYTES);
+
+    const concurrent = await request(app)
+      .post("/api/jobs")
+      .attach("files", await createSamplePng(), {
+        filename: "concurrent.png",
+        contentType: "image/png"
+      });
+    expect(concurrent.status).toBe(503);
+    expect(concurrent.body.error).toBe("Service temporarily at upload capacity");
+
+    resolveValidation({ format: "png", width: 4, height: 3, size: 1 });
+    expect((await firstUpload).status).toBe(202);
+    expect(budget.reservedBytes).toBe(0);
+    app.close();
+  });
+
   it("accepts a valid single-image upload and returns a job id", async () => {
     const { app } = createTestApp();
 
@@ -187,6 +254,20 @@ describe("photo jobs API", () => {
     expect(response.body.jobId).toEqual(expect.any(String));
     expect(response.body.tasks).toHaveLength(1);
     expect(response.body.tasks[0].taskId).toEqual(expect.any(String));
+  });
+
+  it("exposes only effective public upload limits", async () => {
+    const { app } = createTestApp();
+    const response = await request(app).get("/api/config");
+
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({
+      maxFileBytes: MAX_FILE_BYTES,
+      maxPixels: MAX_PIXELS,
+      maxBatchSize: 5,
+      supportedMimeTypes: ["image/jpeg", "image/png", "image/webp", "image/avif"]
+    });
+    expect(JSON.stringify(response.body)).not.toContain("OPENROUTER");
   });
 
   it("rejects an oversized or unsupported upload before creating a job", async () => {
@@ -225,7 +306,9 @@ describe("photo jobs API", () => {
       .post("/api/jobs")
       .attach("files", pixels, { filename: "huge.png", contentType: "image/png" });
 
-    expect(oversized.body.error).toBe("File too large. Each photo must be 10 MB or smaller.");
+    expect(oversized.body.error).toBe(
+      `File too large. Each photo must be ${MAX_FILE_BYTES / (1024 * 1024)} MB or smaller.`
+    );
     expect(batch.body.error).toBe("Choose between 1 and 5 photos.");
     expect(pixelLimit.body.error).toBe(`Image exceeds the ${MAX_PIXELS.toLocaleString("en-US")} pixel limit.`);
     expect(JSON.stringify({ oversized, batch, pixelLimit })).not.toContain("C:\\");

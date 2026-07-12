@@ -194,3 +194,47 @@ Completed all remaining final-review findings without modifying the approved des
 
 - The upload memory budget is process-local, matching the MVP's process-local job store; a multi-process deployment would need shared admission state.
 - Full verification uses mocked OpenRouter behavior and fake E2E processing; no live provider credential was used.
+
+## Final Fix
+
+### Status
+
+DONE_WITH_CONCERNS
+
+Completed the remaining final-review findings without modifying the approved design or implementation plan.
+
+### Requirement-to-Test Mapping
+
+- Deferred upload reservation: `server/app.test.ts` keeps the process-wide upload reservation held behind deferred async validation, proves a concurrent upload remains `503`, and verifies release after persistence; the existing parser-error, abort, and success coverage remains active. The idempotent release path is shared by parser errors, request abort/error/close, response close, validation failure, storage failure, success, and unexpected exceptions.
+- Scale-aware output preflight: `server/jobs/process-job.test.ts` processes representative 5MP and 12MP Auto Enhance metadata while retaining the oversized Upscale rejection test. Auto uses its effective scale of 1; Upscale remains guarded against its safe maximum scale of 4.
+- Centralized result expiration: `src/App.test.tsx` covers retry `410`, preview image `onError`, and download `410`, all rendering the accessible `Result unavailable or expired` state with `Enhance another`. `src/api.test.ts` verifies the status-preserving download error, and `tests/e2e/photo-enhancer.spec.ts` continues to verify a real successful browser download.
+- Configured public upload limits: `server/app.test.ts` verifies `/api/config` exposes only effective upload limits and no provider secret. `src/App.test.tsx` verifies `UploadDropzone` reflects custom file-size, pixel, batch, and format configuration; client download and upload guidance consume the safe config contract.
+
+### Changed Files
+
+- `server/app.ts`, `server/app.test.ts`: deferred reservation release, safe dynamic file-size messages, upload config endpoint, and regression coverage.
+- `server/jobs/process-job.ts`, `server/jobs/process-job.test.ts`: preset-aware output pixel preflight and Auto/Upscale coverage.
+- `src/api.ts`, `src/api.test.ts`, `src/App.tsx`, `src/App.test.tsx`: status-aware download requests, shared expiration state transitions, and public config loading.
+- `src/components/DownloadActions.tsx`, `src/components/ImagePreview.tsx`, `src/components/UploadDropzone.tsx`, `src/types.ts`: checked downloads, preview error handling, dynamic guidance, and config typing.
+
+### Commands And Actual Results
+
+- `npm test`: PASS, 7 Vitest suites and 99 tests.
+- `npm run typecheck`: PASS, `tsc --noEmit` exited 0.
+- `npm run build`: PASS, TypeScript check exited 0 and Vite produced `dist/assets/index-D85xDdYI.js` and `dist/assets/index-DwVbDrWO.css`.
+- `npm run test:e2e`: PASS, 6 Playwright tests using one worker.
+- `git diff --check`: PASS, no whitespace errors; Git emitted only Windows LF-to-CRLF working-copy warnings.
+
+### Constraint Check
+
+- The OpenRouter key remains server-only; the public config endpoint contains only upload limits and supported MIME types.
+- No raw media, provider responses, API keys, or filesystem paths are logged or returned.
+- Upload memory, queue, storage, processing concurrency, output pixels, output bytes, and cleanup protections remain bounded.
+- The client preserves no-gradient styling, accessible controls, fresh-upload recovery, and no-horizontal-overflow behavior.
+- E2E continues to force fake processing and an empty OpenRouter key.
+- Design and plan documents were not changed.
+
+### Concerns
+
+- Upload admission remains process-local, matching the MVP's in-memory job store; a multi-process deployment would require shared admission state.
+- Full verification uses mocked OpenRouter behavior and fake E2E processing; no live provider credential was used.

@@ -14,7 +14,11 @@ import { RateLimiter, UploadMemoryBudget } from "./admission";
 import { CapacityError, JobStore } from "./jobs/job-store";
 import { JobProcessor, type PipelineLike } from "./jobs/process-job";
 import { ProcessingPipeline } from "./processing/pipeline";
-import { validateBatchSize, validateManualControls, validateUpload } from "./validation";
+import {
+  validateBatchSize,
+  validateManualControls,
+  validateUpload
+} from "./validation";
 import type { ImageTask, ManualControls, OutputFormat, Preset } from "./types";
 
 const DEFAULT_CONTROLS: ManualControls = {
@@ -51,6 +55,7 @@ export interface CreateAppOptions {
   now?: () => number;
   rateLimiter?: RateLimiter;
   uploadMemoryBudget?: UploadMemoryBudget;
+  validateUploadFn?: typeof validateUpload;
 }
 
 export type PhotoEnhancerApp = Express & { close: () => void };
@@ -72,9 +77,10 @@ function parseControlsByTask(input: unknown): ManualControls[] | undefined {
 }
 
 function safeUploadError(error: unknown): string {
+  const fileSizeLimit = formatFileSizeLimit(MAX_FILE_BYTES);
   if (error instanceof multer.MulterError) {
     if (error.code === "LIMIT_FILE_SIZE") {
-      return "File too large. Each photo must be 10 MB or smaller.";
+      return `File too large. Each photo must be ${fileSizeLimit} or smaller.`;
     }
     if (
       error.code === "LIMIT_FILE_COUNT" ||
@@ -88,7 +94,7 @@ function safeUploadError(error: unknown): string {
 
   const message = error instanceof Error ? error.message : "";
   if (/maximum size|file exceeds/i.test(message)) {
-    return "File too large. Each photo must be 10 MB or smaller.";
+    return `File too large. Each photo must be ${fileSizeLimit} or smaller.`;
   }
   if (/pixel/i.test(message)) {
     return `Image exceeds the ${MAX_PIXELS.toLocaleString("en-US")} pixel limit.`;
@@ -100,6 +106,14 @@ function safeUploadError(error: unknown): string {
     return `Choose between 1 and ${MAX_BATCH_SIZE} photos.`;
   }
   return "Invalid request";
+}
+
+function formatFileSizeLimit(bytes: number): string {
+  const megabytes = bytes / (1024 * 1024);
+  if (Number.isInteger(megabytes)) return `${megabytes} MB`;
+  const kilobytes = bytes / 1024;
+  if (Number.isInteger(kilobytes)) return `${kilobytes} KB`;
+  return `${bytes} bytes`;
 }
 
 function taskResponse(jobId: string, task: ImageTask): Record<string, unknown> {
@@ -137,6 +151,7 @@ export function createApp(options: CreateAppOptions = {}): PhotoEnhancerApp {
   const store = options.store ?? new JobStore();
   const pipeline = options.pipeline ?? new ProcessingPipeline();
   const now = options.now ?? Date.now;
+  const validateUploadForRequest = options.validateUploadFn ?? validateUpload;
   const processor = new JobProcessor(store, pipeline);
   const rateLimiter = options.rateLimiter ?? new RateLimiter({
     maxRequests: UPLOAD_RATE_LIMIT_MAX,
@@ -168,84 +183,112 @@ export function createApp(options: CreateAppOptions = {}): PhotoEnhancerApp {
       response.status(503).json({ error: "Service temporarily at upload capacity" });
       return;
     }
+    let parserFinished = false;
+    let asyncWorkFinished = false;
     let released = false;
     const release = () => {
       if (released) return;
       released = true;
       releaseUploadMemory();
     };
-    request.once("aborted", release);
-    request.once("error", release);
-    request.once("close", release);
-    response.once("close", release);
-    upload.array("files", MAX_BATCH_SIZE)(request, response, async (error) => {
-      release();
-      if (error) {
-        response.status(400).json({ error: safeUploadError(error) });
-        return;
-      }
+    const releaseWhenSafe = () => {
+      if (parserFinished && asyncWorkFinished) release();
+    };
+    request.once("aborted", releaseWhenSafe);
+    request.once("error", releaseWhenSafe);
+    request.once("close", releaseWhenSafe);
+    response.once("close", releaseWhenSafe);
+    try {
+      upload.array("files", MAX_BATCH_SIZE)(request, response, async (error) => {
+        try {
+          parserFinished = true;
+          if (error) {
+            response.status(400).json({ error: safeUploadError(error) });
+            return;
+          }
 
-      let preset: Preset;
-      let controls: ManualControls;
-      let outputFormat: OutputFormat;
-      let controlsByTask: ManualControls[] | undefined;
-      let acceptedFiles: Array<{
-        id: string;
-        buffer: Buffer;
-        metadata: Awaited<ReturnType<typeof validateUpload>>;
-      }>;
-      try {
-        const files = (request.files as Express.Multer.File[] | undefined) ?? [];
-        validateBatchSize(files.length);
-        preset = presetSchema.parse(request.body?.preset ?? "auto") as Preset;
-        controls = parseControls(request.body?.controls);
-        controlsByTask = parseControlsByTask(request.body?.controlsByTask);
-        if (controlsByTask && controlsByTask.length !== files.length) {
-          throw new Error("Invalid per-image controls");
-        }
-        outputFormat = outputFormatSchema.parse(
-          request.body?.outputFormat ?? "png"
-        ) as OutputFormat;
-        acceptedFiles = [];
-        for (const file of files) {
-          const metadata = await validateUpload(file);
-          acceptedFiles.push({
-            id: randomUUID(),
-            buffer: file.buffer,
-            metadata
-          });
-        }
-      } catch (error) {
-        response.status(400).json({ error: safeUploadError(error) });
-        return;
-      }
-
-      let job: ReturnType<JobStore["createFromBuffers"]>;
-      try {
-        job = store.createFromBuffers(
-          acceptedFiles,
-          preset,
-          controls,
-          outputFormat,
-          controlsByTask
-        );
-      } catch (error) {
-        if (error instanceof CapacityError) {
-          response.status(503).json({ error: "Service temporarily at capacity" });
+        let preset: Preset;
+        let controls: ManualControls;
+        let outputFormat: OutputFormat;
+        let controlsByTask: ManualControls[] | undefined;
+        let acceptedFiles: Array<{
+          id: string;
+          buffer: Buffer;
+          metadata: Awaited<ReturnType<typeof validateUpload>>;
+        }>;
+        try {
+          const files = (request.files as Express.Multer.File[] | undefined) ?? [];
+          validateBatchSize(files.length);
+          preset = presetSchema.parse(request.body?.preset ?? "auto") as Preset;
+          controls = parseControls(request.body?.controls);
+          controlsByTask = parseControlsByTask(request.body?.controlsByTask);
+          if (controlsByTask && controlsByTask.length !== files.length) {
+            throw new Error("Invalid per-image controls");
+          }
+          outputFormat = outputFormatSchema.parse(
+            request.body?.outputFormat ?? "png"
+          ) as OutputFormat;
+          acceptedFiles = [];
+          for (const file of files) {
+            const metadata = await validateUploadForRequest(file);
+            acceptedFiles.push({
+              id: randomUUID(),
+              buffer: file.buffer,
+              metadata
+            });
+          }
+        } catch (error) {
+          response.status(400).json({ error: safeUploadError(error) });
           return;
         }
-        response.status(500).json({ error: "Internal server error" });
-        return;
-      }
 
-      const failFirstTask =
-        process.env.E2E_FAKE_PROCESSING === "true" &&
-        request.get("x-e2e-retry") === "true";
-      processor.startJob(job.id, { failFirstTask });
-      response.status(202).json({
-        jobId: job.id,
-        tasks: job.tasks.map((task) => ({ taskId: task.id, status: task.status }))
+        let job: ReturnType<JobStore["createFromBuffers"]>;
+        try {
+          job = store.createFromBuffers(
+            acceptedFiles,
+            preset,
+            controls,
+            outputFormat,
+            controlsByTask
+          );
+        } catch (error) {
+          if (error instanceof CapacityError) {
+            response.status(503).json({ error: "Service temporarily at capacity" });
+            return;
+          }
+          response.status(500).json({ error: "Internal server error" });
+          return;
+        }
+
+        const failFirstTask =
+          process.env.E2E_FAKE_PROCESSING === "true" &&
+          request.get("x-e2e-retry") === "true";
+        processor.startJob(job.id, { failFirstTask });
+        response.status(202).json({
+          jobId: job.id,
+          tasks: job.tasks.map((task) => ({ taskId: task.id, status: task.status }))
+        });
+        } catch {
+          if (!response.headersSent) response.status(500).json({ error: "Internal server error" });
+        } finally {
+          asyncWorkFinished = true;
+          releaseWhenSafe();
+        }
       });
+    } catch {
+      parserFinished = true;
+      asyncWorkFinished = true;
+      releaseWhenSafe();
+      if (!response.headersSent) response.status(500).json({ error: "Internal server error" });
+    }
+  });
+
+  app.get("/api/config", (_request, response) => {
+    response.json({
+      maxFileBytes: MAX_FILE_BYTES,
+      maxPixels: MAX_PIXELS,
+      maxBatchSize: MAX_BATCH_SIZE,
+      supportedMimeTypes: ["image/jpeg", "image/png", "image/webp", "image/avif"]
     });
   });
 

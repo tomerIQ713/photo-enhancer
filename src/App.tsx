@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { createJob, getDownloadUrl, getJob, retryTask } from "./api";
-import type { JobTask, ManualControls, OutputFormat, Preset } from "./types";
+import { createJob, downloadResult, getDownloadUrl, getJob, getUploadConfig, retryTask } from "./api";
+import type { JobTask, ManualControls, OutputFormat, Preset, UploadConfig } from "./types";
 import { DownloadActions } from "./components/DownloadActions";
 import { FileQueue } from "./components/FileQueue";
 import { ImagePreview } from "./components/ImagePreview";
@@ -21,6 +21,13 @@ const PRESET_DEFAULTS: Record<Preset, ManualControls> = {
   upscale: { strength: 70, sharpness: 70, noiseReduction: 35, brightness: 50, contrast: 55 }
 };
 
+const DEFAULT_UPLOAD_CONFIG: UploadConfig = {
+  maxFileBytes: 10 * 1024 * 1024,
+  maxPixels: 25_000_000,
+  maxBatchSize: 5,
+  supportedMimeTypes: ["image/jpeg", "image/png", "image/webp", "image/avif"]
+};
+
 export function App() {
   const [files, setFiles] = useState<File[]>([]);
   const [preset, setPreset] = useState<Preset>("auto");
@@ -39,6 +46,7 @@ export function App() {
   const [canRetryStatus, setCanRetryStatus] = useState(false);
   const [resultUnavailable, setResultUnavailable] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<number>();
+  const [uploadConfig, setUploadConfig] = useState<UploadConfig>(DEFAULT_UPLOAD_CONFIG);
   const [pollVersion, setPollVersion] = useState(0);
   const sessionGeneration = useRef(0);
   const submitController = useRef<AbortController | undefined>(undefined);
@@ -56,6 +64,18 @@ export function App() {
       submitController.current?.abort();
       pollController.current?.abort();
       retryController.current?.abort();
+    };
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    void getUploadConfig()
+      .then((config) => {
+        if (active && !sameUploadConfig(config, DEFAULT_UPLOAD_CONFIG)) setUploadConfig(config);
+      })
+      .catch(() => undefined);
+    return () => {
+      active = false;
     };
   }, []);
 
@@ -86,13 +106,8 @@ export function App() {
         schedulePoll(1000, 0);
       } catch (pollError) {
         if (controller.signal.aborted || disposed || sessionGeneration.current !== generation) return;
-        if (
-          pollError instanceof Error &&
-          (pollError as Error & { status?: number }).status === 410
-        ) {
-          setResultUnavailable(true);
-          setPollingError(undefined);
-          setCanRetryStatus(false);
+        if (isExpiredError(pollError)) {
+          handleResultUnavailable();
           return;
         }
         if (attempt < 3) {
@@ -235,7 +250,13 @@ export function App() {
       setCanRetryStatus(false);
       setPollVersion((current) => current + 1);
     } catch (retryError) {
-      if (!controller.signal.aborted && sessionGeneration.current === generation) setError(getErrorMessage(retryError));
+      if (!controller.signal.aborted && sessionGeneration.current === generation) {
+        if (isExpiredError(retryError)) {
+          handleResultUnavailable();
+        } else {
+          setError(getErrorMessage(retryError));
+        }
+      }
     } finally {
       if (sessionGeneration.current === generation && retryController.current === controller) {
         retryController.current = undefined;
@@ -250,20 +271,52 @@ export function App() {
     setPollVersion((current) => current + 1);
   };
 
+  const handleResultUnavailable = () => {
+    setResultUnavailable(true);
+    setError(undefined);
+    setPollingError(undefined);
+    setCanRetryStatus(false);
+  };
+
+  const handleDownload = async (taskId: string, format: OutputFormat) => {
+    try {
+      await downloadResult(jobId!, taskId, format);
+    } catch (downloadError) {
+      if (isExpiredError(downloadError)) {
+        handleResultUnavailable();
+      } else {
+        setError(getErrorMessage(downloadError));
+      }
+    }
+  };
+
+  const handleDownloadAll = async () => {
+    for (const item of batchDownloads) {
+      try {
+        await downloadResult(jobId!, item.taskId, item.format);
+      } catch (downloadError) {
+        if (isExpiredError(downloadError)) handleResultUnavailable();
+        else setError(getErrorMessage(downloadError));
+        return;
+      }
+    }
+  };
+
   const downloadHref = useMemo(() => {
-    if (!jobId || !selectedTask || selectedTask.status !== "complete" || !selectedTask.result?.previewUrl) return undefined;
+    if (resultUnavailable || !jobId || !selectedTask || selectedTask.status !== "complete" || !selectedTask.result?.previewUrl) return undefined;
     return getDownloadUrl(jobId, selectedTask.taskId, formatForSession);
-  }, [formatForSession, jobId, selectedTask]);
+  }, [formatForSession, jobId, resultUnavailable, selectedTask]);
 
   const batchDownloads = useMemo(() => {
-    if (!jobId) return [];
+    if (!jobId || resultUnavailable) return [];
     return tasks
-      .filter((task) => task.status === "complete" && task.result?.previewUrl)
-      .map((task) => ({
-        href: getDownloadUrl(jobId, task.taskId, formatForSession),
-        format: formatForSession
+        .filter((task) => task.status === "complete" && task.result?.previewUrl)
+        .map((task) => ({
+          href: getDownloadUrl(jobId, task.taskId, formatForSession),
+          taskId: task.taskId,
+          format: formatForSession
       }));
-  }, [formatForSession, jobId, tasks]);
+  }, [formatForSession, jobId, resultUnavailable, tasks]);
 
   return (
     <main className="app-shell">
@@ -277,7 +330,7 @@ export function App() {
           <h1>Make good photos feel finished.</h1>
           <p>Upload a small batch, choose a finish, and review every result before downloading.</p>
         </section>
-        <UploadDropzone files={files} onFilesSelected={handleFilesSelected} onValidationError={handleValidationError} />
+        <UploadDropzone files={files} config={uploadConfig} onFilesSelected={handleFilesSelected} onValidationError={handleValidationError} />
         {uploadProgress !== undefined && <p className="upload-progress" role="status">Uploading photos: {uploadProgress}%</p>}
         {(error || pollingError) && (
           <div className="error-message" role="alert">
@@ -287,10 +340,10 @@ export function App() {
         )}
         <div className="workbench-grid">
           <FileQueue files={files} tasks={tasks} selectedIndex={selectedIndex} onSelect={handleSelect} onRetry={handleRetry} pendingRetryTaskId={pendingRetryTaskId} />
-          <ImagePreview sourceFile={selectedFile} previewUrl={selectedOutputUrl} taskStatus={selectedTask?.status} taskError={selectedTask?.error} resultUnavailable={resultUnavailable} onEnhanceAnother={() => handleFilesSelected([])} />
+          <ImagePreview sourceFile={selectedFile} previewUrl={selectedOutputUrl} taskStatus={selectedTask?.status} taskError={selectedTask?.error} resultUnavailable={resultUnavailable} onResultUnavailable={handleResultUnavailable} onEnhanceAnother={() => handleFilesSelected([])} />
           <div className="controls-column">
             <PresetControls preset={preset} controls={selectedControls} outputFormat={formatForSession} formatDisabled={Boolean(submittedFormat)} disabled={isSubmitting} onPresetChange={handlePresetChange} onControlsChange={handleControlsChange} onOutputFormatChange={setOutputFormat} onReset={resetControls} onSubmit={handleSubmit} />
-            <DownloadActions jobId={jobId} taskId={selectedTask?.taskId} format={formatForSession} href={downloadHref} batch={batchDownloads} />
+            <DownloadActions jobId={jobId} taskId={selectedTask?.taskId} format={formatForSession} href={downloadHref} batch={batchDownloads} onDownload={selectedTask?.taskId ? () => handleDownload(selectedTask.taskId, formatForSession) : undefined} onDownloadAll={handleDownloadAll} />
           </div>
         </div>
       </div>
@@ -300,4 +353,15 @@ export function App() {
 
 function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "Something went wrong. Please try again.";
+}
+
+function isExpiredError(error: unknown): boolean {
+  return typeof error === "object" && error !== null && "status" in error && error.status === 410;
+}
+
+function sameUploadConfig(left: UploadConfig, right: UploadConfig): boolean {
+  return left.maxFileBytes === right.maxFileBytes &&
+    left.maxPixels === right.maxPixels &&
+    left.maxBatchSize === right.maxBatchSize &&
+    left.supportedMimeTypes.join(",") === right.supportedMimeTypes.join(",");
 }

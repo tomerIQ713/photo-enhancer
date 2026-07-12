@@ -11,6 +11,13 @@ export interface ManualControls {
 
 export type TaskStatus = "queued" | "analyzing" | "processing" | "complete" | "failed";
 
+export interface UploadConfig {
+  maxFileBytes: number;
+  maxPixels: number;
+  maxBatchSize: number;
+  supportedMimeTypes: string[];
+}
+
 export interface JobTask {
   taskId: string;
   status: TaskStatus;

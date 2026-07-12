@@ -30,6 +30,10 @@ export interface StartJobOptions {
 
 const SAFE_PROCESSING_ERROR = "Processing failed";
 
+function maxEffectiveScale(preset: Parameters<ProcessingPipeline["process"]>[1]): number {
+  return preset === "auto" ? 1 : 4;
+}
+
 function markTaskSafely(
   store: JobStore,
   jobId: string,
@@ -66,9 +70,10 @@ async function processTask(
 
     markTaskSafely(store, jobId, taskId, { status: "analyzing", error: undefined });
     const sourcePixels = task.metadata.width * task.metadata.height;
+    const effectiveScale = maxEffectiveScale(job.preset);
     if (
       !Number.isSafeInteger(sourcePixels) ||
-      sourcePixels > Math.floor(maxOutputPixels / 16)
+      sourcePixels > maxOutputPixels / (effectiveScale * effectiveScale)
     ) {
       throw new Error("Output pixel limit exceeded");
     }
