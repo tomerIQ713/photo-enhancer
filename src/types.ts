@@ -15,8 +15,11 @@ export interface JobTask {
   taskId: string;
   status: TaskStatus;
   error?: string;
-  originalUrl?: string;
-  outputUrl?: string;
+  result?: {
+    format: OutputFormat;
+    size: number;
+    previewUrl: string;
+  };
 }
 
 export interface JobSummary {

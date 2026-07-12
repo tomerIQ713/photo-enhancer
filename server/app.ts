@@ -61,7 +61,7 @@ function isExpired(store: JobStore, jobId: string, now: () => number): boolean {
   return true;
 }
 
-function taskResponse(task: ImageTask): Record<string, unknown> {
+function taskResponse(jobId: string, task: ImageTask): Record<string, unknown> {
   const response: Record<string, unknown> = {
     taskId: task.id,
     status: task.status
@@ -73,7 +73,8 @@ function taskResponse(task: ImageTask): Record<string, unknown> {
     try {
       response.result = {
         format: task.outputFormat,
-        size: fs.statSync(task.outputPath).size
+        size: fs.statSync(task.outputPath).size,
+        previewUrl: `/api/jobs/${encodeURIComponent(jobId)}/tasks/${encodeURIComponent(task.id)}/preview`
       };
     } catch {
       // A result may expire between status reads; omit its temporary metadata.
@@ -177,8 +178,44 @@ export function createApp(options: CreateAppOptions = {}): PhotoEnhancerApp {
       controls: result.job.controls,
       createdAt: result.job.createdAt,
       expiresAt: result.job.expiresAt,
-      tasks: result.job.tasks.map(taskResponse)
+      tasks: result.job.tasks.map((task) => taskResponse(result.job!.id, task))
     });
+  });
+
+  app.get("/api/jobs/:jobId/tasks/:taskId/preview", (request, response) => {
+    const result = activeJob(store, request.params.jobId, now);
+    if (result.expired) {
+      response.status(410).json({ error: "Result expired" });
+      return;
+    }
+    if (!result.job) {
+      response.status(404).json({ error: "Job not found" });
+      return;
+    }
+    const task = result.job.tasks.find((candidate) => candidate.id === request.params.taskId);
+    if (!task) {
+      response.status(404).json({ error: "Task not found" });
+      return;
+    }
+    if (task.status !== "complete" || !task.outputPath) {
+      response.status(404).json({ error: "Result not available" });
+      return;
+    }
+    try {
+      fs.statSync(task.outputPath);
+    } catch {
+      response.status(410).json({ error: "Result expired" });
+      return;
+    }
+    const format = task.outputFormat ?? "png";
+    response.type(format === "jpg" ? "jpg" : "png");
+    fs.createReadStream(task.outputPath).on("error", () => {
+      if (!response.headersSent) {
+        response.status(410).json({ error: "Result expired" });
+      } else {
+        response.destroy();
+      }
+    }).pipe(response);
   });
 
   app.post("/api/jobs/:jobId/tasks/:taskId/retry", (request, response) => {

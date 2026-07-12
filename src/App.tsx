@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { createJob, getDownloadUrl, getJob, retryTask } from "./api";
 import type { JobTask, ManualControls, OutputFormat, Preset } from "./types";
 import { DownloadActions } from "./components/DownloadActions";
@@ -21,67 +21,91 @@ export function App() {
   const [preset, setPreset] = useState<Preset>("auto");
   const [controls, setControls] = useState<ManualControls>(DEFAULT_CONTROLS);
   const [outputFormat, setOutputFormat] = useState<OutputFormat>("png");
+  const [submittedFormat, setSubmittedFormat] = useState<OutputFormat>();
   const [jobId, setJobId] = useState<string>();
   const [tasks, setTasks] = useState<JobTask[]>([]);
   const [selectedTaskId, setSelectedTaskId] = useState<string>();
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string>();
+  const [pollingError, setPollingError] = useState<string>();
+  const [canRetryStatus, setCanRetryStatus] = useState(false);
   const [pollVersion, setPollVersion] = useState(0);
-  const requestController = useRef<AbortController | undefined>(undefined);
+  const sessionGeneration = useRef(0);
+  const submitController = useRef<AbortController | undefined>(undefined);
+  const pollController = useRef<AbortController | undefined>(undefined);
+  const retryController = useRef<AbortController | undefined>(undefined);
 
   const selectedIndex = tasks.findIndex((task) => task.taskId === selectedTaskId);
   const selectedTask = selectedIndex >= 0 ? tasks[selectedIndex] : undefined;
-  const selectedFileUrl = useMemo(() => {
-    if (selectedIndex < 0 || typeof URL.createObjectURL !== "function") return undefined;
-    return URL.createObjectURL(files[selectedIndex]);
-  }, [files, selectedIndex]);
-  useEffect(() => {
-    return () => {
-      if (selectedFileUrl) URL.revokeObjectURL(selectedFileUrl);
-    };
-  }, [selectedFileUrl]);
-  const selectedOriginalUrl = selectedTask?.originalUrl ?? selectedFileUrl;
-  const selectedOutputUrl = selectedTask?.outputUrl ?? (jobId && selectedTask?.status === "complete" && selectedTask
-    ? getDownloadUrl(jobId, selectedTask.taskId, outputFormat)
-    : undefined);
+  const selectedFile = selectedIndex >= 0 ? files[selectedIndex] : undefined;
+  const selectedOutputUrl = selectedTask?.result?.previewUrl;
+  const formatForSession = submittedFormat ?? outputFormat;
 
   useEffect(() => {
-    return () => requestController.current?.abort();
+    return () => {
+      submitController.current?.abort();
+      pollController.current?.abort();
+      retryController.current?.abort();
+    };
   }, []);
 
   useEffect(() => {
     if (!jobId) return;
+    const generation = sessionGeneration.current;
     const controller = new AbortController();
-    requestController.current = controller;
+    pollController.current?.abort();
+    pollController.current = controller;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let disposed = false;
 
-    const poll = async () => {
+    const schedulePoll = (delay: number, attempt: number) => {
+      timer = setTimeout(() => void poll(attempt), delay);
+    };
+
+    const poll = async (attempt: number) => {
       try {
         const status = await getJob(jobId, controller.signal);
-        if (controller.signal.aborted) return;
+        if (controller.signal.aborted || disposed || sessionGeneration.current !== generation) return;
         setTasks(status.tasks);
         setSelectedTaskId((current) => current ?? status.tasks[0]?.taskId);
+        setPollingError(undefined);
+        setCanRetryStatus(false);
         if (status.tasks.every((task) => task.status === "complete" || task.status === "failed")) return;
-        timer = setTimeout(poll, 1000);
+        schedulePoll(1000, 0);
       } catch (pollError) {
-        if (!controller.signal.aborted) setError(getErrorMessage(pollError));
+        if (controller.signal.aborted || disposed || sessionGeneration.current !== generation) return;
+        if (attempt < 3) {
+          setPollingError("Status refresh failed. Retrying shortly...");
+          schedulePoll(Math.min(100 * 2 ** attempt, 800), attempt + 1);
+        } else {
+          setPollingError("Status refresh stopped after several attempts.");
+          setCanRetryStatus(true);
+        }
       }
     };
 
-    void poll();
+    void poll(0);
     return () => {
+      disposed = true;
       controller.abort();
       if (timer) clearTimeout(timer);
     };
   }, [jobId, pollVersion]);
 
   const handleFilesSelected = (nextFiles: File[]) => {
-    requestController.current?.abort();
+    sessionGeneration.current += 1;
+    submitController.current?.abort();
+    pollController.current?.abort();
+    retryController.current?.abort();
+    setIsSubmitting(false);
     setFiles(nextFiles);
     setTasks([]);
     setJobId(undefined);
+    setSubmittedFormat(undefined);
     setSelectedTaskId(undefined);
     setError(undefined);
+    setPollingError(undefined);
+    setCanRetryStatus(false);
   };
 
   const handleSubmit = async () => {
@@ -89,39 +113,63 @@ export function App() {
       setError("Select at least one photo before enhancing.");
       return;
     }
+    if (isSubmitting) return;
     setError(undefined);
+    setPollingError(undefined);
+    setCanRetryStatus(false);
     setIsSubmitting(true);
+    const generation = sessionGeneration.current;
     const controller = new AbortController();
-    requestController.current = controller;
+    submitController.current?.abort();
+    submitController.current = controller;
+    const format = outputFormat;
+    setSubmittedFormat(format);
     try {
-      const summary = await createJob(files, preset, controls, outputFormat);
+      const summary = await createJob(files, preset, controls, format, controller.signal);
+      if (controller.signal.aborted || sessionGeneration.current !== generation) return;
       setJobId(summary.jobId);
       setTasks(summary.tasks);
       setSelectedTaskId(summary.tasks[0]?.taskId);
     } catch (submitError) {
-      if (!controller.signal.aborted) setError(getErrorMessage(submitError));
+      if (!controller.signal.aborted && sessionGeneration.current === generation) {
+        setSubmittedFormat(undefined);
+        setError(getErrorMessage(submitError));
+      }
     } finally {
-      if (!controller.signal.aborted) setIsSubmitting(false);
+      if (sessionGeneration.current === generation && submitController.current === controller) {
+        setIsSubmitting(false);
+      }
     }
   };
 
   const handleRetry = async (taskId: string) => {
     if (!jobId) return;
+    const generation = sessionGeneration.current;
+    const controller = new AbortController();
+    retryController.current?.abort();
+    retryController.current = controller;
     setError(undefined);
     try {
-      await retryTask(jobId, taskId);
+      await retryTask(jobId, taskId, controller.signal);
+      if (controller.signal.aborted || sessionGeneration.current !== generation) return;
       setTasks((current) => current.map((task) => task.taskId === taskId ? { ...task, status: "queued", error: undefined } : task));
       setSelectedTaskId(taskId);
       setPollVersion((current) => current + 1);
     } catch (retryError) {
-      setError(getErrorMessage(retryError));
+      if (!controller.signal.aborted && sessionGeneration.current === generation) setError(getErrorMessage(retryError));
     }
+  };
+
+  const retryStatus = () => {
+    setPollingError(undefined);
+    setCanRetryStatus(false);
+    setPollVersion((current) => current + 1);
   };
 
   const downloadHref = useMemo(() => {
     if (!jobId || !selectedTask || selectedTask.status !== "complete") return undefined;
-    return getDownloadUrl(jobId, selectedTask.taskId, outputFormat);
-  }, [jobId, outputFormat, selectedTask]);
+    return getDownloadUrl(jobId, selectedTask.taskId, formatForSession);
+  }, [formatForSession, jobId, selectedTask]);
 
   return (
     <main className="app-shell">
@@ -136,13 +184,18 @@ export function App() {
           <p>Upload a small batch, choose a finish, and review every result before downloading.</p>
         </section>
         <UploadDropzone files={files} onFilesSelected={handleFilesSelected} />
-        {error && <p className="error-message" role="alert">{error}</p>}
+        {(error || pollingError) && (
+          <div className="error-message" role="alert">
+            <span>{error ?? pollingError}</span>
+            {canRetryStatus && <button className="text-button" type="button" onClick={retryStatus}>Retry status</button>}
+          </div>
+        )}
         <div className="workbench-grid">
           <FileQueue files={files} tasks={tasks} selectedTaskId={selectedTaskId} onSelect={setSelectedTaskId} onRetry={handleRetry} jobId={jobId} />
-          <ImagePreview originalUrl={selectedOriginalUrl} outputUrl={selectedOutputUrl} taskStatus={selectedTask?.status} />
+          <ImagePreview sourceFile={selectedFile} previewUrl={selectedOutputUrl} taskStatus={selectedTask?.status} taskError={selectedTask?.error} />
           <div className="controls-column">
-            <PresetControls preset={preset} controls={controls} outputFormat={outputFormat} disabled={isSubmitting} onPresetChange={setPreset} onControlsChange={setControls} onOutputFormatChange={setOutputFormat} onSubmit={handleSubmit} />
-            <DownloadActions jobId={jobId} taskId={selectedTask?.taskId} format={outputFormat} href={downloadHref} />
+            <PresetControls preset={preset} controls={controls} outputFormat={formatForSession} formatDisabled={Boolean(submittedFormat)} disabled={isSubmitting} onPresetChange={setPreset} onControlsChange={setControls} onOutputFormatChange={setOutputFormat} onSubmit={handleSubmit} />
+            <DownloadActions jobId={jobId} taskId={selectedTask?.taskId} format={formatForSession} href={downloadHref} />
           </div>
         </div>
       </div>

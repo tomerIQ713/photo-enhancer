@@ -1,17 +1,44 @@
 import { useEffect, useState, type CSSProperties } from "react";
 
 interface ImagePreviewProps {
-  originalUrl?: string;
-  outputUrl?: string;
+  sourceFile?: File;
+  previewUrl?: string;
   taskStatus?: string;
+  taskError?: string;
 }
 
-export function ImagePreview({ originalUrl, outputUrl, taskStatus }: ImagePreviewProps) {
+export function ImagePreview({ sourceFile, previewUrl, taskStatus, taskError }: ImagePreviewProps) {
   const [comparison, setComparison] = useState(50);
+  const [originalObjectUrl, setOriginalObjectUrl] = useState<string>();
 
-  useEffect(() => setComparison(50), [originalUrl, outputUrl]);
+  useEffect(() => {
+    if (!sourceFile || typeof URL.createObjectURL !== "function") {
+      setOriginalObjectUrl(undefined);
+      return;
+    }
+    const objectUrl = URL.createObjectURL(sourceFile);
+    setOriginalObjectUrl(objectUrl);
+    return () => {
+      URL.revokeObjectURL(objectUrl);
+    };
+  }, [sourceFile]);
 
-  if (!originalUrl && !outputUrl) {
+  useEffect(() => setComparison(50), [previewUrl, sourceFile]);
+
+  if (taskStatus === "failed") {
+    return (
+      <section className="preview-stage failed-preview" aria-labelledby="preview-heading">
+        <div className="preview-header">
+          <div><p className="section-kicker">Preview</p><h2 id="preview-heading">Enhancement failed</h2></div>
+          <span className="preview-status">Failed</span>
+        </div>
+        <p className="preview-error" role="alert">{taskError ?? "This photo could not be enhanced."}</p>
+        {originalObjectUrl && <img className="single-preview-image" src={originalObjectUrl} alt="Original photo" />}
+      </section>
+    );
+  }
+
+  if (!originalObjectUrl && !previewUrl) {
     return (
       <section className="preview-stage empty-preview" aria-labelledby="preview-heading">
         <p className="section-kicker">Preview</p>
@@ -21,9 +48,9 @@ export function ImagePreview({ originalUrl, outputUrl, taskStatus }: ImagePrevie
     );
   }
 
-  const before = originalUrl ?? outputUrl;
-  const after = outputUrl ?? originalUrl;
-  const isComplete = taskStatus === "complete" && Boolean(outputUrl);
+  const before = originalObjectUrl ?? previewUrl;
+  const after = previewUrl ?? originalObjectUrl;
+  const isComplete = taskStatus === "complete" && Boolean(previewUrl);
 
   return (
     <section className="preview-stage" aria-labelledby="preview-heading">

@@ -5,6 +5,7 @@ interface PresetControlsProps {
   controls: ManualControls;
   outputFormat: OutputFormat;
   disabled?: boolean;
+  formatDisabled?: boolean;
   onPresetChange: (preset: Preset) => void;
   onControlsChange: (controls: ManualControls) => void;
   onOutputFormatChange: (format: OutputFormat) => void;
@@ -24,6 +25,7 @@ export function PresetControls({
   controls,
   outputFormat,
   disabled = false,
+  formatDisabled = false,
   onPresetChange,
   onControlsChange,
   onOutputFormatChange,
@@ -63,7 +65,7 @@ export function PresetControls({
       </div>
       <label className="format-field">
         <span>Download format</span>
-        <select value={outputFormat} disabled={disabled} onChange={(event) => onOutputFormatChange(event.target.value as OutputFormat)}>
+        <select value={outputFormat} disabled={disabled || formatDisabled} onChange={(event) => onOutputFormatChange(event.target.value as OutputFormat)}>
           <option value="png">PNG</option>
           <option value="jpg">JPG</option>
         </select>

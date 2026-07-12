@@ -48,7 +48,10 @@ export function FileQueue({ files, tasks, selectedTaskId, onSelect, onRetry }: F
                     <strong>{file.name}</strong>
                     <small>{formatBytes(file.size)}</small>
                   </span>
-                  {task && <span className={`status status-${task.status}`}>{statusLabels[task.status]}</span>}
+                  {task && <span className={`status status-${task.status}`}>
+                    {statusLabels[task.status]}
+                    {task.status === "failed" && task.error ? `: ${task.error}` : ""}
+                  </span>}
                 </button>
                 {task?.status === "failed" && (
                   <button className="text-button retry-button" type="button" onClick={() => onRetry(task.taskId)}>

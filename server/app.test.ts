@@ -164,7 +164,10 @@ describe("photo jobs API", () => {
       (task: { status: string }) => task.status === "complete"
     );
     expect(failedTask.error).toBe("Processing failed");
-    expect(completeTask.result).toMatchObject({ format: "png" });
+    expect(completeTask.result).toMatchObject({
+      format: "png",
+      previewUrl: `/api/jobs/${response.body.jobId}/tasks/${completeTask.taskId}/preview`
+    });
     const failedOriginalPath = store
       .get(response.body.jobId)
       ?.tasks.find((task) => task.id === failedTask.taskId)?.originalPath;
@@ -182,7 +185,16 @@ describe("photo jobs API", () => {
     );
     expect(download.status).toBe(200);
     expect(download.headers["content-type"]).toContain("image/png");
+    expect(download.headers["content-disposition"]).toContain("attachment");
     expect(download.body).toBeInstanceOf(Buffer);
+
+    const preview = await request(app).get(
+      `/api/jobs/${response.body.jobId}/tasks/${completeTask.taskId}/preview`
+    );
+    expect(preview.status).toBe(200);
+    expect(preview.headers["content-type"]).toContain("image/png");
+    expect(preview.headers["content-disposition"]).toBeUndefined();
+    expect(preview.body).toBeInstanceOf(Buffer);
   });
 
   it("returns 404 for unknown resources and 410 for expired results", async () => {
@@ -249,9 +261,13 @@ describe("photo jobs API", () => {
     const download = await request(app).get(
       `/api/jobs/${jobId}/tasks/${response.body.tasks[0].taskId}/download?format=png`
     );
+    const preview = await request(app).get(
+      `/api/jobs/${jobId}/tasks/${response.body.tasks[0].taskId}/preview`
+    );
     expect(status.status).toBe(200);
     expect(status.body.tasks[0].result).toBeUndefined();
     expect(download.status).toBe(410);
+    expect(preview.status).toBe(410);
   });
 
   it("returns 410 when retry observes an expired job", async () => {
