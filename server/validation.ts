@@ -1,4 +1,5 @@
 import sharp from "sharp";
+import { z } from "zod";
 import {
   MAX_BATCH_SIZE,
   MAX_FILE_BYTES,
@@ -6,8 +7,23 @@ import {
 } from "./config";
 import type {
   ImageMetadata,
+  ManualControls,
   SupportedImageFormat
 } from "./types";
+
+const controlValueSchema = z.number().finite().min(0).max(100);
+
+export const manualControlsSchema = z.object({
+  strength: controlValueSchema,
+  sharpness: controlValueSchema,
+  noiseReduction: controlValueSchema,
+  brightness: controlValueSchema,
+  contrast: controlValueSchema
+});
+
+export function validateManualControls(input: unknown): ManualControls {
+  return manualControlsSchema.parse(input);
+}
 
 const MIME_TO_FORMAT: Record<string, SupportedImageFormat> = {
   "image/jpeg": "jpeg",
@@ -56,7 +72,11 @@ export async function validateUpload(file: {
   let metadata: sharp.Metadata;
   try {
     metadata = await sharp(file.buffer, { limitInputPixels: MAX_PIXELS }).metadata();
-  } catch {
+  } catch (error) {
+    if (error instanceof Error && /pixel limit/i.test(error.message)) {
+      throw new Error(`Image exceeds maximum pixel count of ${MAX_PIXELS}`);
+    }
+
     throw new Error("Unsupported image. Accepted formats are JPEG, PNG, WebP, and AVIF.");
   }
 
