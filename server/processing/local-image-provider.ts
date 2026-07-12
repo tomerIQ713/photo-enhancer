@@ -17,7 +17,9 @@ export class LocalImageProvider {
     const brightness = clamp(parameters.brightness, -1, 1);
     const contrast = clamp(parameters.contrast, 0.5, 1.5);
     const source = Buffer.from(input);
-    const image = sharp(source).rotate();
+    const normalized = await sharp(source).rotate().toBuffer();
+    const metadata = await sharp(normalized).metadata();
+    const image = sharp(normalized);
 
     if (brightness !== 0 || contrast !== 1) {
       image.linear(contrast, brightness * 32);
@@ -32,7 +34,6 @@ export class LocalImageProvider {
     }
 
     if (scale > 1) {
-      const metadata = await sharp(source).metadata();
       if (metadata.width && metadata.height) {
         image.resize({
           width: Math.max(1, Math.round(metadata.width * scale)),

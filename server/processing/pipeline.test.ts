@@ -34,6 +34,20 @@ async function createSamplePng(width = 8, height = 6): Promise<Buffer> {
     .toBuffer();
 }
 
+async function createOrientedJpeg(): Promise<Buffer> {
+  return sharp({
+    create: {
+      width: 10,
+      height: 6,
+      channels: 3,
+      background: { r: 120, g: 80, b: 40 }
+    }
+  })
+    .withMetadata({ orientation: 6 })
+    .jpeg()
+    .toBuffer();
+}
+
 describe("ProcessingPipeline", () => {
   let fetchMock: ReturnType<typeof vi.fn>;
   let requestBody: Record<string, unknown> | undefined;
@@ -145,15 +159,86 @@ describe("ProcessingPipeline", () => {
 
     const messages = requestBody?.messages as Array<{
       role: string;
-      content: string;
+      content:
+        | string
+        | Array<
+            | { type: "text"; text: string }
+            | {
+                type: "image_url";
+                image_url: { url: string };
+              }
+          >;
     }>;
+    const userContent = messages[1].content as Array<
+      | { type: "text"; text: string }
+      | { type: "image_url"; image_url: { url: string } }
+    >;
     expect(requestBody).toMatchObject({
       response_format: { type: "json_object" }
     });
-    expect(messages[1].content).toContain("preserve identity");
-    expect(messages[1].content).toContain("preserve composition");
-    expect(messages[1].content).toContain("data:image/png;base64,");
+    expect(userContent).toEqual([
+      expect.objectContaining({
+        type: "text",
+        text: expect.stringContaining("preserve identity")
+      }),
+      {
+        type: "image_url",
+        image_url: {
+          url: expect.stringContaining("data:image/png;base64,")
+        }
+      }
+    ]);
     expect(JSON.stringify(requestBody)).not.toContain("test-key");
+  });
+
+  it("falls back when the OpenRouter response body exceeds the timeout", async () => {
+    let bodyController: ReadableStreamDefaultController<Uint8Array> | undefined;
+    fetchMock.mockImplementationOnce(
+      (_input: RequestInfo | URL, init?: RequestInit) => {
+        const body = new ReadableStream<Uint8Array>({
+          start(controller) {
+            bodyController = controller;
+          }
+        });
+        init?.signal?.addEventListener("abort", () => bodyController?.error());
+        return Promise.resolve(new Response(body, { status: 200 }));
+      }
+    );
+
+    const provider = new OpenRouterProvider({
+      fetch: fetchMock,
+      timeoutMs: 20,
+      apiKey: "test-key"
+    });
+    const result = await Promise.race([
+      provider.analyze(await createSamplePng(), "auto", defaultControls),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error("response body timeout was ignored")), 200)
+      )
+    ]);
+
+    expect(result).toEqual({
+      scale: 1,
+      sharpen: 0.5,
+      denoise: 1,
+      brightness: 0,
+      contrast: 1
+    });
+  });
+
+  it("preserves the oriented aspect ratio when upscaling JPEG orientation 6", async () => {
+    const orientedJpeg = await createOrientedJpeg();
+    const output = await pipeline.process(
+      orientedJpeg,
+      "upscale",
+      defaultControls,
+      "jpg"
+    );
+    const metadata = await sharp(output).metadata();
+
+    expect(metadata.format).toBe("jpeg");
+    expect(metadata.width).toBe(12);
+    expect(metadata.height).toBe(20);
   });
 
   it("does not mutate the original input buffer", async () => {
@@ -165,37 +250,21 @@ describe("ProcessingPipeline", () => {
     expect(samplePng.equals(original)).toBe(true);
   });
 
-  it("clamps unsafe provider parameters before local processing", async () => {
-    fetchMock.mockImplementationOnce(async () =>
-      new Response(
-        JSON.stringify({
-          choices: [
-            {
-              message: {
-                content: JSON.stringify({
-                  scale: 99,
-                  sharpen: -20,
-                  denoise: 99,
-                  brightness: 99,
-                  contrast: -99
-                })
-              }
-            }
-          ]
-        }),
-        { status: 200 }
-      )
-    );
-
-    const output = await pipeline.process(
+  it("clamps unsafe parameters before passing them to Sharp", async () => {
+    const output = await new LocalImageProvider().apply(
       await createSamplePng(),
-      "auto",
-      defaultControls,
+      {
+        scale: 99,
+        sharpen: -20,
+        denoise: 99,
+        brightness: 99,
+        contrast: -99
+      },
       "png"
     );
     const metadata = await sharp(output).metadata();
 
-    expect(metadata.width).toBeLessThanOrEqual(32);
-    expect(metadata.height).toBeLessThanOrEqual(24);
+    expect(metadata.width).toBe(32);
+    expect(metadata.height).toBe(24);
   });
 });

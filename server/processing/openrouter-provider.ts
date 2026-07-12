@@ -71,42 +71,41 @@ export class OpenRouterProvider {
       return fallback;
     }
 
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
+
     try {
       const image = await sharp(input).png().toBuffer();
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
-      let response: Response;
-
-      try {
-        response = await this.fetchImpl(
-          "https://openrouter.ai/api/v1/chat/completions",
-          {
-            method: "POST",
-            headers: {
-              Authorization: `Bearer ${this.apiKey}`,
-              "Content-Type": "application/json"
-            },
-            body: JSON.stringify({
-              model: this.model,
-              response_format: { type: "json_object" },
-              messages: [
-                {
-                  role: "system",
-                  content:
-                    "You are a faithful photo enhancement analyzer. Return only a JSON object with numeric scale, sharpen, denoise, brightness, and contrast fields."
-                },
-                {
-                  role: "user",
-                  content: `${this.instruction(preset, controls)}\nImage: data:image/png;base64,${image.toString("base64")}`
-                }
-              ]
-            }),
-            signal: controller.signal
-          }
-        );
-      } finally {
-        clearTimeout(timeout);
-      }
+      const dataUrl = `data:image/png;base64,${image.toString("base64")}`;
+      const response = await this.fetchImpl(
+        "https://openrouter.ai/api/v1/chat/completions",
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${this.apiKey}`,
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            model: this.model,
+            response_format: { type: "json_object" },
+            messages: [
+              {
+                role: "system",
+                content:
+                  "You are a faithful photo enhancement analyzer. Return only a JSON object with numeric scale, sharpen, denoise, brightness, and contrast fields."
+              },
+              {
+                role: "user",
+                content: [
+                  { type: "text", text: this.instruction(preset, controls) },
+                  { type: "image_url", image_url: { url: dataUrl } }
+                ]
+              }
+            ]
+          }),
+          signal: controller.signal
+        }
+      );
 
       if (!response.ok) {
         return fallback;
@@ -123,6 +122,8 @@ export class OpenRouterProvider {
       return parsedParameters.success ? parsedParameters.data : fallback;
     } catch {
       return fallback;
+    } finally {
+      clearTimeout(timeout);
     }
   }
 
