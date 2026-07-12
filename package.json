@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "concurrently \"tsx watch server/index.ts\" \"vite\"",
     "build": "tsc --noEmit && vite build",
+    "start": "node --import tsx server/index.ts",
     "test": "vitest run --exclude tests/e2e/**",
     "test:e2e": "playwright test --config=playwright.config.ts",
     "typecheck": "tsc --noEmit"

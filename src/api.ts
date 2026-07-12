@@ -17,6 +17,8 @@ export class ApiError extends Error {
   }
 }
 
+const API_BASE = import.meta.env.VITE_API_URL ?? "/api";
+
 async function readJson<T>(response: Response): Promise<T> {
   if (!response.ok) {
     throw await responseError(response);
@@ -33,7 +35,7 @@ async function responseError(response: Response): Promise<ApiError> {
 }
 
 export async function getUploadConfig(): Promise<UploadConfig> {
-  return readJson<UploadConfig>(await fetch("/api/config"));
+  return readJson<UploadConfig>(await fetch(`${API_BASE}/config`));
 }
 
 export async function createJob(
@@ -57,7 +59,7 @@ export async function createJob(
 
   return new Promise<JobSummary>((resolve, reject) => {
     const xhr = new XMLHttpRequest();
-    xhr.open("POST", "/api/jobs");
+    xhr.open("POST", `${API_BASE}/jobs`);
     if (apiKey) xhr.setRequestHeader("x-openrouter-key", apiKey);
     xhr.responseType = "json";
     xhr.upload.onprogress = (event) => {
@@ -85,7 +87,7 @@ export async function createJob(
 }
 
 export async function getJob(jobId: string, signal?: AbortSignal): Promise<JobStatus> {
-  return readJson<JobStatus>(await fetch(`/api/jobs/${encodeURIComponent(jobId)}`, { signal }));
+  return readJson<JobStatus>(await fetch(`${API_BASE}/jobs/${encodeURIComponent(jobId)}`, { signal }));
 }
 
 export async function retryTask(
@@ -94,13 +96,13 @@ export async function retryTask(
   signal?: AbortSignal
 ): Promise<void> {
   await readJson(await fetch(
-    `/api/jobs/${encodeURIComponent(jobId)}/tasks/${encodeURIComponent(taskId)}/retry`,
+    `${API_BASE}/jobs/${encodeURIComponent(jobId)}/tasks/${encodeURIComponent(taskId)}/retry`,
     { method: "POST", signal }
   ));
 }
 
 export function getDownloadUrl(jobId: string, taskId: string, format: OutputFormat): string {
-  return `/api/jobs/${encodeURIComponent(jobId)}/tasks/${encodeURIComponent(taskId)}/download?format=${format}`;
+  return `${API_BASE}/jobs/${encodeURIComponent(jobId)}/tasks/${encodeURIComponent(taskId)}/download?format=${format}`;
 }
 
 export async function downloadResult(

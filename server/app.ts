@@ -161,6 +161,18 @@ export function createApp(options: CreateAppOptions = {}): PhotoEnhancerApp {
   const uploadMemoryBudget = options.uploadMemoryBudget ?? processUploadMemoryBudget;
   const app = express() as PhotoEnhancerApp;
   app.set("trust proxy", false);
+
+  app.use((_request, response, next) => {
+    response.setHeader("Access-Control-Allow-Origin", "*");
+    response.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+    response.setHeader("Access-Control-Allow-Headers", "Content-Type, x-openrouter-key, x-e2e-retry");
+    if (_request.method === "OPTIONS") {
+      response.status(204).end();
+      return;
+    }
+    next();
+  });
+
   const cleanupIntervalMs = options.cleanupIntervalMs ?? 60_000;
   const cleanupTimer = setInterval(() => store.removeExpired(now()), cleanupIntervalMs);
   cleanupTimer.unref();

@@ -1,0 +1,12 @@
+{
+  "build": {
+    "builder": "NIXPACKS",
+    "buildCommand": "npm ci"
+  },
+  "deploy": {
+    "startCommand": "npm start",
+    "healthcheckPath": "/api/config",
+    "restartPolicyType": "ON_FAILURE",
+    "numReplicas": 1
+  }
+}
