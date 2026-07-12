@@ -76,7 +76,9 @@ describe("Photo enhancer workbench", () => {
       "auto",
       expect.objectContaining({ strength: 50 }),
       "png",
-      expect.any(AbortSignal)
+      expect.any(AbortSignal),
+      [expect.objectContaining({ strength: 50 })],
+      expect.any(Function)
     );
     expect(await screen.findByText(/complete/i)).toBeVisible();
   });
@@ -217,7 +219,9 @@ describe("Photo enhancer workbench", () => {
       "upscale",
       expect.objectContaining({ strength: 52 }),
       "jpg",
-      expect.any(AbortSignal)
+      expect.any(AbortSignal),
+      [expect.objectContaining({ strength: 52 })],
+      expect.any(Function)
     );
     expect(screen.getByLabelText(/download format/i)).toBeDisabled();
     expect(screen.getByLabelText(/download format/i)).toHaveValue("jpg");
@@ -522,5 +526,94 @@ describe("Photo enhancer workbench", () => {
 
     await waitFor(() => expect(api.createJob).toHaveBeenCalledTimes(2));
     expect(screen.queryByRole("button", { name: "Retry portrait.png" })).not.toBeInTheDocument();
+  });
+
+  it("shows upload guidance and rejects an unsupported file before submission", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    expect(screen.getByText(/JPEG, PNG, WebP, or AVIF/i)).toBeVisible();
+    expect(screen.getByText(/25 million pixels/i)).toBeVisible();
+    fireEvent.drop(screen.getByLabelText(/upload photos/i), {
+      dataTransfer: { files: [new File(["gif"], "bad.gif", { type: "image/gif" })] }
+    });
+
+    expect(screen.getByRole("alert")).toHaveTextContent(/supported formats/i);
+    expect(screen.queryByText("bad.gif")).not.toBeInTheDocument();
+  });
+
+  it("shows real upload progress while a job request is pending", async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.createJob).mockImplementationOnce((...args) => {
+      args[6]?.(42);
+      return new Promise(() => undefined);
+    });
+    render(<App />);
+
+    await user.upload(screen.getByLabelText(/upload photos/i), pngFile);
+    await user.click(screen.getByRole("button", { name: /enhance photos/i }));
+    expect(screen.getByText(/Uploading photos: 42%/i)).toBeVisible();
+  });
+
+  it("keeps per-image controls independent and sends them as a batch", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.upload(screen.getByLabelText(/upload photos/i), [pngFile, secondPngFile]);
+    await user.click(screen.getByRole("button", { name: /landscape.png/i }));
+    fireEvent.change(screen.getByRole("slider", { name: /enhancement strength/i }), {
+      target: { value: "80" }
+    });
+    await user.click(screen.getByRole("button", { name: /enhance photos/i }));
+
+    expect(api.createJob).toHaveBeenCalledWith(
+      [pngFile, secondPngFile],
+      "auto",
+      expect.objectContaining({ strength: 50 }),
+      "png",
+      expect.any(AbortSignal),
+      [
+        expect.objectContaining({ strength: 50 }),
+        expect.objectContaining({ strength: 80 })
+      ],
+      expect.any(Function)
+    );
+  });
+
+  it("resets selected controls to the active preset defaults", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.upload(screen.getByLabelText(/upload photos/i), pngFile);
+    fireEvent.change(screen.getByRole("slider", { name: /enhancement strength/i }), {
+      target: { value: "93" }
+    });
+    await user.click(screen.getByRole("button", { name: /reset controls/i }));
+
+    expect(screen.getByRole("slider", { name: /enhancement strength/i })).toHaveValue("50");
+  });
+
+  it("renders queue thumbnails, batch download, and zoom fit controls for completed results", async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.getJob).mockResolvedValue({
+      jobId: "job-1", preset: "auto", controls: {
+        strength: 50, sharpness: 50, noiseReduction: 50, brightness: 50, contrast: 50
+      }, createdAt: 0, expiresAt: Date.now() + 60_000,
+      tasks: [
+        { taskId: "task-1", status: "complete", result: { format: "png", size: 1, previewUrl: "/one" } },
+        { taskId: "task-2", status: "complete", result: { format: "png", size: 1, previewUrl: "/two" } }
+      ]
+    });
+    render(<App />);
+
+    await user.upload(screen.getByLabelText(/upload photos/i), [pngFile, secondPngFile]);
+    await user.click(screen.getByRole("button", { name: /enhance photos/i }));
+
+    expect(await screen.findAllByAltText(/queue thumbnail/i)).toHaveLength(2);
+    expect(screen.getByRole("button", { name: /download all 2 PNGs/i })).toBeVisible();
+    expect(screen.getByRole("button", { name: /zoom in/i })).toBeVisible();
+    expect(screen.getByRole("button", { name: /fit to view/i })).toBeVisible();
+    await user.click(screen.getByRole("button", { name: /zoom in/i }));
+    await user.click(screen.getByRole("button", { name: /fit to view/i }));
   });
 });

@@ -14,6 +14,7 @@ export type TaskStatus = "queued" | "analyzing" | "processing" | "complete" | "f
 export interface JobTask {
   taskId: string;
   status: TaskStatus;
+  controls?: ManualControls;
   error?: string;
   result?: {
     format: OutputFormat;
@@ -24,7 +25,7 @@ export interface JobTask {
 
 export interface JobSummary {
   jobId: string;
-  tasks: Array<Pick<JobTask, "taskId" | "status">>;
+  tasks: Array<Pick<JobTask, "taskId" | "status" | "controls">>;
 }
 
 export interface JobStatus {

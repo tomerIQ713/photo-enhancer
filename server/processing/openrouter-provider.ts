@@ -26,6 +26,38 @@ export interface OpenRouterProviderOptions {
   timeoutMs?: number;
   apiKey?: string;
   model?: string;
+  retryDelayMs?: number;
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, Number.isFinite(value) ? value : min));
+}
+
+export function mergeManualControls(
+  base: EnhancementParameters,
+  controls: ManualControls,
+  preset: Preset
+): EnhancementParameters {
+  const strength = clamp(controls.strength, 0, 100);
+  const sharpness = clamp(controls.sharpness, 0, 100);
+  const noiseReduction = clamp(controls.noiseReduction, 0, 100);
+  const brightness = clamp(controls.brightness, 0, 100);
+  const contrast = clamp(controls.contrast, 0, 100);
+  return {
+    scale: clamp(
+      preset === "upscale" ? base.scale + (strength - 50) / 100 : base.scale,
+      1,
+      4
+    ),
+    sharpen: clamp(
+      Math.round((base.sharpen + (strength - 50) / 100 + (sharpness - 50) / 50) * 1000) / 1000,
+      0,
+      2
+    ),
+    denoise: clamp(base.denoise + (noiseReduction - 50) / 25, 0, 3),
+    brightness: clamp(base.brightness + (brightness - 50) / 50, -1, 1),
+    contrast: clamp(base.contrast + (contrast - 50) / 100, 0.5, 1.5)
+  };
 }
 
 export function presetDefaults(preset: Preset): EnhancementParameters {
@@ -53,12 +85,14 @@ export class OpenRouterProvider {
   private readonly timeoutMs: number;
   private readonly apiKey: string;
   private readonly model: string;
+  private readonly retryDelayMs: number;
 
   constructor(options: OpenRouterProviderOptions = {}) {
     this.fetchImpl = options.fetch ?? fetch;
     this.timeoutMs = options.timeoutMs ?? OPENROUTER_TIMEOUT_MS;
     this.apiKey = options.apiKey ?? process.env.OPENROUTER_API_KEY ?? "";
     this.model = options.model ?? OPENROUTER_MODEL;
+    this.retryDelayMs = options.retryDelayMs ?? 200;
   }
 
   async analyze(
@@ -81,54 +115,81 @@ export class OpenRouterProvider {
     try {
       const image = await sharp(input).png().toBuffer();
       const dataUrl = `data:image/png;base64,${image.toString("base64")}`;
-      const response = await this.fetchImpl(
-        "https://openrouter.ai/api/v1/chat/completions",
-        {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${this.apiKey}`,
-            "Content-Type": "application/json"
-          },
-          body: JSON.stringify({
-            model: this.model,
-            response_format: { type: "json_object" },
-            messages: [
-              {
-                role: "system",
-                content:
-                  "You are a faithful photo enhancement analyzer. Return only a JSON object with numeric scale, sharpen, denoise, brightness, and contrast fields."
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        let response: Response;
+        try {
+          response = await this.fetchImpl(
+            "https://openrouter.ai/api/v1/chat/completions",
+            {
+              method: "POST",
+              headers: {
+                Authorization: `Bearer ${this.apiKey}`,
+                "Content-Type": "application/json"
               },
-              {
-                role: "user",
-                content: [
-                  { type: "text", text: this.instruction(preset, controls) },
-                  { type: "image_url", image_url: { url: dataUrl } }
+              body: JSON.stringify({
+                model: this.model,
+                response_format: { type: "json_object" },
+                messages: [
+                  {
+                    role: "system",
+                    content:
+                      "You are a faithful photo enhancement analyzer. Return only a JSON object with numeric scale, sharpen, denoise, brightness, and contrast fields."
+                  },
+                  {
+                    role: "user",
+                    content: [
+                      { type: "text", text: this.instruction(preset, controls) },
+                      { type: "image_url", image_url: { url: dataUrl } }
+                    ]
+                  }
                 ]
-              }
-            ]
-          }),
-          signal: controller.signal
+              }),
+              signal: controller.signal
+            }
+          );
+        } catch (error) {
+          if (controller.signal.aborted || attempt === 2) return fallback;
+          await this.waitBeforeRetry(attempt, controller);
+          continue;
         }
-      );
 
-      if (!response.ok) {
-        return fallback;
+        if (!response.ok) {
+          if (![429, 500, 502, 503, 504].includes(response.status) || attempt === 2) {
+            return fallback;
+          }
+          await this.waitBeforeRetry(attempt, controller);
+          continue;
+        }
+
+        const parsedResponse = responseSchema.safeParse(await response.json());
+        if (!parsedResponse.success) return fallback;
+
+        try {
+          const parsedParameters = parameterSchema.safeParse(
+            JSON.parse(parsedResponse.data.choices[0].message.content)
+          );
+          return parsedParameters.success ? parsedParameters.data : fallback;
+        } catch {
+          return fallback;
+        }
       }
-
-      const parsedResponse = responseSchema.safeParse(await response.json());
-      if (!parsedResponse.success) {
-        return fallback;
-      }
-
-      const parsedParameters = parameterSchema.safeParse(
-        JSON.parse(parsedResponse.data.choices[0].message.content)
-      );
-      return parsedParameters.success ? parsedParameters.data : fallback;
+      return fallback;
     } catch {
       return fallback;
     } finally {
       clearTimeout(timeout);
     }
+  }
+
+  private async waitBeforeRetry(attempt: number, controller: AbortController): Promise<void> {
+    const delay = Math.min(this.retryDelayMs * 2 ** attempt, Math.max(0, this.timeoutMs / 2));
+    await new Promise<void>((resolve) => {
+      const timer = setTimeout(resolve, delay);
+      controller.signal.addEventListener("abort", () => {
+        clearTimeout(timer);
+        resolve();
+      }, { once: true });
+    });
   }
 
   private instruction(preset: Preset, controls: ManualControls): string {

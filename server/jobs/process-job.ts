@@ -77,7 +77,7 @@ async function processTask(
     const output = await pipeline.process(
       input,
       job.preset,
-      job.controls,
+      task.controls ?? job.controls,
       task.outputFormat ?? "png"
     );
     if (!Buffer.isBuffer(output) || output.length > maxOutputBytes) {

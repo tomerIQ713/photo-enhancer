@@ -1,6 +1,6 @@
 import type { ManualControls, OutputFormat, Preset } from "../types";
 import { LocalImageProvider } from "./local-image-provider";
-import { OpenRouterProvider } from "./openrouter-provider";
+import { mergeManualControls, OpenRouterProvider } from "./openrouter-provider";
 
 export class ProcessingPipeline {
   constructor(
@@ -19,6 +19,10 @@ export class ProcessingPipeline {
       preset,
       controls
     );
-    return this.localImageProvider.apply(input, parameters, outputFormat);
+    return this.localImageProvider.apply(
+      input,
+      mergeManualControls(parameters, controls, preset),
+      outputFormat
+    );
   }
 }

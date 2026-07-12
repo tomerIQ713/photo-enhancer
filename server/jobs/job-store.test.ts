@@ -4,7 +4,7 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import sharp from "sharp";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { JobStore } from "./job-store";
+import { CapacityError, JobStore } from "./job-store";
 import type { ManualControls, StoredUpload } from "../types";
 
 const defaultControls: ManualControls = {
@@ -189,5 +189,50 @@ describe("JobStore", () => {
     store.removeExpired(1_100);
 
     expect(store.retryTask(job.id, taskId, 1_100)).toBe("expired");
+  });
+
+  it("rejects storage admission before creating a job when the temporary budget is full", async () => {
+    const directory = createTempDirectory();
+    const sample = await createSamplePng();
+    const store = new JobStore({
+      rootDir: path.join(directory, "jobs"),
+      maxTemporaryStorageBytes: sample.length
+    });
+
+    expect(() => store.createFromBuffers([{
+      id: "budgeted",
+      buffer: sample,
+      metadata: { format: "png", width: 2, height: 2, size: sample.length }
+    }], "auto", defaultControls)).toThrow(CapacityError);
+    expect(store.size).toBe(0);
+  });
+
+  it("retries a failed initial directory cleanup during the current process", async () => {
+    const directory = createTempDirectory();
+    const store = new JobStore({ rootDir: path.join(directory, "jobs") });
+    const sample = await createSamplePng();
+    const originalWrite = fs.writeFileSync;
+    const originalRemove = fs.rmSync;
+    let removeCalls = 0;
+    vi.spyOn(fs, "writeFileSync").mockImplementationOnce(() => {
+      throw new Error("write failed");
+    });
+    vi.spyOn(fs, "rmSync").mockImplementation((...args) => {
+      removeCalls += 1;
+      if (removeCalls === 1) throw new Error("cleanup failed");
+      return originalRemove(...args);
+    });
+
+    expect(() => store.createFromBuffers([{
+      id: "orphaned",
+      buffer: sample,
+      metadata: { format: "png", width: 2, height: 2, size: sample.length }
+    }], "auto", defaultControls)).toThrow("write failed");
+    store.removeExpired();
+
+    expect(removeCalls).toBeGreaterThanOrEqual(2);
+    vi.restoreAllMocks();
+    expect(fs.existsSync(path.join(directory, "jobs"))).toBe(true);
+    void originalWrite;
   });
 });

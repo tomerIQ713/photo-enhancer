@@ -1,14 +1,14 @@
 import sharp from "sharp";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { LocalImageProvider } from "./local-image-provider";
-import { OpenRouterProvider } from "./openrouter-provider";
+import { OpenRouterProvider, mergeManualControls, presetDefaults } from "./openrouter-provider";
 import { ProcessingPipeline } from "./pipeline";
 import type { ManualControls } from "../types";
 
 const defaultControls: ManualControls = {
-  strength: 70,
-  sharpness: 60,
-  noiseReduction: 30,
+  strength: 50,
+  sharpness: 50,
+  noiseReduction: 50,
   brightness: 50,
   contrast: 50
 };
@@ -147,6 +147,73 @@ describe("ProcessingPipeline", () => {
 
     expect(output).toBeInstanceOf(Buffer);
     expect((await sharp(output).metadata()).format).toBe("png");
+  });
+
+  it("retries retryable OpenRouter failures and succeeds within the request deadline", async () => {
+    fetchMock
+      .mockResolvedValueOnce(new Response("busy", { status: 503 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        choices: [{ message: { content: JSON.stringify(validParameters) } }]
+      }), { status: 200 }));
+    const provider = new OpenRouterProvider({
+      fetch: fetchMock,
+      timeoutMs: 200,
+      retryDelayMs: 1,
+      apiKey: "test-key"
+    });
+
+    await expect(provider.analyze(await createSamplePng(), "auto", defaultControls))
+      .resolves.toEqual(validParameters);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not retry a successful response with malformed JSON", async () => {
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({
+      choices: [{ message: { content: "not-json" } }]
+    }), { status: 200 }));
+    const provider = new OpenRouterProvider({
+      fetch: fetchMock,
+      timeoutMs: 200,
+      retryDelayMs: 1,
+      apiKey: "test-key"
+    });
+
+    await expect(provider.analyze(await createSamplePng(), "auto", defaultControls))
+      .resolves.toEqual(presetDefaults("auto"));
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("applies validated manual controls to deterministic fallback output", async () => {
+    const sample = await createSamplePng();
+    const provider = new OpenRouterProvider({ fetch: fetchMock, apiKey: "" });
+    const fallbackPipeline = new ProcessingPipeline(provider, new LocalImageProvider());
+    const subtle = await fallbackPipeline.process(sample, "auto", {
+      strength: 0,
+      sharpness: 0,
+      noiseReduction: 0,
+      brightness: 0,
+      contrast: 0
+    }, "png");
+    const strong = await fallbackPipeline.process(sample, "auto", {
+      strength: 100,
+      sharpness: 100,
+      noiseReduction: 100,
+      brightness: 100,
+      contrast: 100
+    }, "png");
+
+    expect(strong.equals(subtle)).toBe(false);
+    expect(mergeManualControls(presetDefaults("upscale"), {
+      strength: 999,
+      sharpness: -10,
+      noiseReduction: 50,
+      brightness: 50,
+      contrast: 50
+    }, "upscale")).toMatchObject({
+      scale: 2.5,
+      sharpen: 0.3,
+      denoise: 1
+    });
   });
 
   it("requests JSON-only faithful enhancement instructions", async () => {

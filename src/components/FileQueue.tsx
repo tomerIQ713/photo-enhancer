@@ -1,13 +1,13 @@
+import { useEffect, useState } from "react";
 import type { JobTask } from "../types";
 
 interface FileQueueProps {
   files: File[];
   tasks: JobTask[];
-  selectedTaskId?: string;
-  onSelect: (taskId: string) => void;
+  selectedIndex: number;
+  onSelect: (index: number) => void;
   onRetry: (taskId: string) => void;
   pendingRetryTaskId?: string;
-  jobId?: string;
 }
 
 const statusLabels: Record<JobTask["status"], string> = {
@@ -18,7 +18,7 @@ const statusLabels: Record<JobTask["status"], string> = {
   failed: "Failed"
 };
 
-export function FileQueue({ files, tasks, selectedTaskId, onSelect, onRetry, pendingRetryTaskId }: FileQueueProps) {
+export function FileQueue({ files, tasks, selectedIndex, onSelect, onRetry, pendingRetryTaskId }: FileQueueProps) {
   return (
     <section className="panel queue-panel" aria-labelledby="queue-heading">
       <div className="panel-heading">
@@ -34,18 +34,18 @@ export function FileQueue({ files, tasks, selectedTaskId, onSelect, onRetry, pen
         <ul className="file-list">
           {files.map((file, index) => {
             const task = tasks[index];
-            const isSelected = task?.taskId === selectedTaskId;
+            const isSelected = index === selectedIndex;
             return (
               <li key={`${file.name}-${index}`}>
                 <button
                   className={`file-row ${isSelected ? "is-selected" : ""}`}
                   type="button"
-                  onClick={() => task && onSelect(task.taskId)}
-                  disabled={!task}
+                   onClick={() => onSelect(index)}
                   aria-pressed={isSelected}
                 >
                   <span className="file-index">{String(index + 1).padStart(2, "0")}</span>
                   <span className="file-details">
+                    <QueueThumbnail file={file} />
                     <strong>{file.name}</strong>
                     <small>{formatBytes(file.size)}</small>
                   </span>
@@ -72,6 +72,24 @@ export function FileQueue({ files, tasks, selectedTaskId, onSelect, onRetry, pen
       )}
     </section>
   );
+}
+
+function QueueThumbnail({ file }: { file: File }) {
+  const [url, setUrl] = useState("");
+  useEffect(() => {
+    if (typeof URL.createObjectURL === "function") {
+      const objectUrl = URL.createObjectURL(file);
+      setUrl(objectUrl);
+      return () => {
+        if (typeof URL.revokeObjectURL === "function") URL.revokeObjectURL(objectUrl);
+      };
+    }
+    const reader = new FileReader();
+    reader.onload = () => setUrl(typeof reader.result === "string" ? reader.result : "");
+    reader.readAsDataURL(file);
+    return () => { reader.onload = null; };
+  }, [file]);
+  return url ? <img className="queue-thumbnail" src={url} alt={`Queue thumbnail ${file.name}`} /> : null;
 }
 
 function formatBytes(bytes: number): string {

@@ -4,7 +4,12 @@ import express, { type Express, type Request, type Response } from "express";
 import multer from "multer";
 import { z } from "zod";
 import { MAX_BATCH_SIZE, MAX_FILE_BYTES } from "./config";
-import { JobStore } from "./jobs/job-store";
+import {
+  UPLOAD_RATE_LIMIT_MAX,
+  UPLOAD_RATE_LIMIT_WINDOW_MS
+} from "./config";
+import { RateLimiter } from "./admission";
+import { CapacityError, JobStore } from "./jobs/job-store";
 import { JobProcessor, type PipelineLike } from "./jobs/process-job";
 import { ProcessingPipeline } from "./processing/pipeline";
 import { validateBatchSize, validateManualControls, validateUpload } from "./validation";
@@ -21,13 +26,14 @@ const DEFAULT_CONTROLS: ManualControls = {
 const presetSchema = z.enum(["auto", "upscale"]);
 const outputFormatSchema = z.enum(["jpg", "png"]);
 const controlsFieldSchema = z.string().optional();
+const controlsByTaskFieldSchema = z.string().optional();
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: {
     fileSize: MAX_FILE_BYTES,
     files: MAX_BATCH_SIZE,
-    fields: 3,
-    parts: MAX_BATCH_SIZE + 3,
+    fields: 4,
+    parts: MAX_BATCH_SIZE + 4,
     fieldSize: 16_384
   }
 });
@@ -37,6 +43,7 @@ export interface CreateAppOptions {
   pipeline?: PipelineLike;
   cleanupIntervalMs?: number;
   now?: () => number;
+  rateLimiter?: RateLimiter;
 }
 
 export type PhotoEnhancerApp = Express & { close: () => void };
@@ -49,22 +56,19 @@ function parseControls(input: unknown): ManualControls {
   return validateManualControls(JSON.parse(field));
 }
 
-function isExpired(store: JobStore, jobId: string, now: () => number): boolean {
-  const job = store.get(jobId);
-  if (!job) {
-    return store.isExpired(jobId);
-  }
-  if (job.expiresAt > now()) {
-    return false;
-  }
-  store.removeExpired(now());
-  return true;
+function parseControlsByTask(input: unknown): ManualControls[] | undefined {
+  const field = controlsByTaskFieldSchema.parse(input);
+  if (field === undefined || field.trim() === "") return undefined;
+  const parsed = JSON.parse(field);
+  if (!Array.isArray(parsed)) throw new Error("Invalid per-image controls");
+  return parsed.map((controls) => validateManualControls(controls));
 }
 
 function taskResponse(jobId: string, task: ImageTask): Record<string, unknown> {
   const response: Record<string, unknown> = {
     taskId: task.id,
-    status: task.status
+    status: task.status,
+    controls: task.controls
   };
   if (task.error) {
     response.error = task.error;
@@ -87,11 +91,8 @@ function activeJob(
   store: JobStore,
   jobId: string,
   now: () => number
-): { job: ReturnType<JobStore["get"]>; expired: boolean } {
-  if (isExpired(store, jobId, now)) {
-    return { job: undefined, expired: true };
-  }
-  return { job: store.get(jobId), expired: false };
+): { job?: ReturnType<JobStore["get"]>; expired: boolean } {
+  return store.getActive(jobId, now());
 }
 
 export function createApp(options: CreateAppOptions = {}): PhotoEnhancerApp {
@@ -99,12 +100,30 @@ export function createApp(options: CreateAppOptions = {}): PhotoEnhancerApp {
   const pipeline = options.pipeline ?? new ProcessingPipeline();
   const now = options.now ?? Date.now;
   const processor = new JobProcessor(store, pipeline);
+  const rateLimiter = options.rateLimiter ?? new RateLimiter({
+    maxRequests: UPLOAD_RATE_LIMIT_MAX,
+    windowMs: UPLOAD_RATE_LIMIT_WINDOW_MS
+  });
   const app = express() as PhotoEnhancerApp;
+  app.set("trust proxy", false);
   const cleanupIntervalMs = options.cleanupIntervalMs ?? 60_000;
   const cleanupTimer = setInterval(() => store.removeExpired(now()), cleanupIntervalMs);
   cleanupTimer.unref();
+  app.use("/api/jobs", (_request, response, next) => {
+    response.setHeader("Cache-Control", "no-store, private");
+    next();
+  });
 
   app.post("/api/jobs", (request: Request, response: Response) => {
+    const clientKey = request.ip || request.socket.remoteAddress || "unknown";
+    if (!rateLimiter.allow(clientKey)) {
+      response.status(429).json({ error: "Too many upload requests" });
+      return;
+    }
+    if (!store.hasAdmissionCapacity()) {
+      response.status(503).json({ error: "Service temporarily at capacity" });
+      return;
+    }
     upload.array("files", MAX_BATCH_SIZE)(request, response, async (error) => {
       if (error) {
         response.status(400).json({ error: "Invalid upload" });
@@ -114,6 +133,7 @@ export function createApp(options: CreateAppOptions = {}): PhotoEnhancerApp {
       let preset: Preset;
       let controls: ManualControls;
       let outputFormat: OutputFormat;
+      let controlsByTask: ManualControls[] | undefined;
       let acceptedFiles: Array<{
         id: string;
         buffer: Buffer;
@@ -124,6 +144,10 @@ export function createApp(options: CreateAppOptions = {}): PhotoEnhancerApp {
         validateBatchSize(files.length);
         preset = presetSchema.parse(request.body?.preset ?? "auto") as Preset;
         controls = parseControls(request.body?.controls);
+        controlsByTask = parseControlsByTask(request.body?.controlsByTask);
+        if (controlsByTask && controlsByTask.length !== files.length) {
+          throw new Error("Invalid per-image controls");
+        }
         outputFormat = outputFormatSchema.parse(
           request.body?.outputFormat ?? "png"
         ) as OutputFormat;
@@ -147,9 +171,14 @@ export function createApp(options: CreateAppOptions = {}): PhotoEnhancerApp {
           acceptedFiles,
           preset,
           controls,
-          outputFormat
+          outputFormat,
+          controlsByTask
         );
-      } catch {
+      } catch (error) {
+        if (error instanceof CapacityError) {
+          response.status(503).json({ error: "Service temporarily at capacity" });
+          return;
+        }
         response.status(500).json({ error: "Internal server error" });
         return;
       }

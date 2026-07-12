@@ -9,6 +9,7 @@ interface PresetControlsProps {
   onPresetChange: (preset: Preset) => void;
   onControlsChange: (controls: ManualControls) => void;
   onOutputFormatChange: (format: OutputFormat) => void;
+  onReset: () => void;
   onSubmit: () => void;
 }
 
@@ -29,6 +30,7 @@ export function PresetControls({
   onPresetChange,
   onControlsChange,
   onOutputFormatChange,
+  onReset,
   onSubmit
 }: PresetControlsProps) {
   return (
@@ -63,6 +65,9 @@ export function PresetControls({
           </label>
         ))}
       </div>
+      <button className="text-button reset-button" type="button" onClick={onReset} disabled={disabled}>
+        Reset controls to preset defaults
+      </button>
       <label className="format-field">
         <span>Download format</span>
         <select value={outputFormat} disabled={disabled || formatDisabled} onChange={(event) => onOutputFormatChange(event.target.value as OutputFormat)}>

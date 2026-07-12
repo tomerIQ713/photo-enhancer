@@ -3,16 +3,52 @@ import type { ChangeEvent, DragEvent, KeyboardEvent } from "react";
 interface UploadDropzoneProps {
   files: File[];
   onFilesSelected: (files: File[]) => void;
+  onValidationError: (message: string) => void;
 }
 
-export function UploadDropzone({ files, onFilesSelected }: UploadDropzoneProps) {
-  const handleFiles = (fileList: FileList | null) => {
-    if (fileList) onFilesSelected(Array.from(fileList));
+const MAX_FILES = 5;
+const MAX_FILE_BYTES = 10 * 1024 * 1024;
+const SUPPORTED_TYPES = new Set(["image/jpeg", "image/png", "image/webp", "image/avif"]);
+
+export function UploadDropzone({ files, onFilesSelected, onValidationError }: UploadDropzoneProps) {
+  const handleFiles = async (fileList: FileList | null) => {
+    if (!fileList) return;
+    const nextFiles = Array.from(fileList);
+    if (nextFiles.length === 0 || nextFiles.length > MAX_FILES) {
+      onValidationError("Choose between 1 and 5 photos.");
+      return;
+    }
+    const invalidType = nextFiles.find((file) => !SUPPORTED_TYPES.has(file.type));
+    if (invalidType) {
+      onValidationError("Unsupported format. Supported formats are JPEG, PNG, WebP, and AVIF.");
+      return;
+    }
+    const oversized = nextFiles.find((file) => file.size > MAX_FILE_BYTES);
+    if (oversized) {
+      onValidationError("File too large. Each photo must be 10 MB or smaller.");
+      return;
+    }
+    if (typeof createImageBitmap === "function") {
+      for (const file of nextFiles) {
+        try {
+          const bitmap = await createImageBitmap(file);
+          const pixels = bitmap.width * bitmap.height;
+          bitmap.close();
+          if (pixels > 25_000_000) {
+            onValidationError("Image exceeds the 25 million pixel limit.");
+            return;
+          }
+        } catch {
+          // The server remains the source of truth for image decoding.
+        }
+      }
+    }
+    onFilesSelected(nextFiles);
   };
-  const handleChange = (event: ChangeEvent<HTMLInputElement>) => handleFiles(event.target.files);
+  const handleChange = (event: ChangeEvent<HTMLInputElement>) => void handleFiles(event.target.files);
   const handleDrop = (event: DragEvent<HTMLLabelElement>) => {
     event.preventDefault();
-    handleFiles(event.dataTransfer.files);
+    void handleFiles(event.dataTransfer.files);
   };
   const handleKeyDown = (event: KeyboardEvent<HTMLLabelElement>) => {
     if (event.key === "Enter" || event.key === " ") {
@@ -43,6 +79,7 @@ export function UploadDropzone({ files, onFilesSelected }: UploadDropzoneProps) 
           ? `${files.length} photo${files.length === 1 ? "" : "s"} selected`
           : "Drop images here or press Enter to browse"}
       </span>
+      <span className="dropzone-guidance">JPEG, PNG, WebP, or AVIF · up to 10 MB · 25 million pixels</span>
     </label>
   );
 }

@@ -7,6 +7,7 @@ import request from "supertest";
 import { afterEach, describe, expect, it } from "vitest";
 import { createApp } from "./app";
 import { JobStore } from "./jobs/job-store";
+import { RateLimiter } from "./admission";
 import type { ManualControls, OutputFormat, Preset } from "./types";
 
 const defaultControls: ManualControls = {
@@ -41,14 +42,16 @@ async function createSamplePng(color = { r: 120, g: 80, b: 40 }): Promise<Buffer
 class TestPipeline {
   calls = 0;
   failuresRemaining = 0;
+  controls: ManualControls[] = [];
 
   async process(
     input: Buffer,
     _preset: Preset,
-    _controls: ManualControls,
+    controls: ManualControls,
     _outputFormat: OutputFormat
   ): Promise<Buffer> {
     this.calls += 1;
+    this.controls.push(controls);
     if (this.failuresRemaining > 0) {
       this.failuresRemaining -= 1;
       throw new Error("provider response must not be exposed");
@@ -133,6 +136,24 @@ describe("photo jobs API", () => {
       .field("outputFormat", "gif");
 
     expect(response.status).toBe(400);
+  });
+
+  it("persists and processes independent controls for queued images", async () => {
+    const { app, pipeline } = createTestApp();
+    const firstControls = { ...defaultControls, strength: 10 };
+    const secondControls = { ...defaultControls, strength: 90 };
+    const response = await request(app)
+      .post("/api/jobs")
+      .attach("files", await createSamplePng(), { filename: "first.png", contentType: "image/png" })
+      .attach("files", await createSamplePng(), { filename: "second.png", contentType: "image/png" })
+      .field("controls", JSON.stringify(defaultControls))
+      .field("controlsByTask", JSON.stringify([firstControls, secondControls]));
+
+    expect(response.status).toBe(202);
+    await waitForStatus(app, response.body.jobId, "complete", 1);
+    expect(pipeline.controls.map((controls) => controls.strength).sort()).toEqual([10, 90]);
+    const status = await request(app).get(`/api/jobs/${response.body.jobId}`);
+    expect(status.body.tasks.map((task: { controls: ManualControls }) => task.controls.strength)).toEqual([10, 90]);
   });
 
   it("processes tasks independently, reports temporary result metadata, and downloads output", async () => {
@@ -329,5 +350,72 @@ describe("photo jobs API", () => {
     const retry = await request(app).post(`/api/jobs/${jobId}/tasks/${taskId}/retry`).send();
 
     expect(retry.status).toBe(410);
+  });
+
+  it("rate limits uploads by the socket client IP without trusting forwarded headers", async () => {
+    const limiter = new RateLimiter({ maxRequests: 1, windowMs: 60_000 });
+    const directory = createTempDirectory();
+    const app = createApp({
+      store: new JobStore({ rootDir: path.join(directory, "jobs") }),
+      rateLimiter: limiter,
+      cleanupIntervalMs: 60_000
+    });
+    const first = await request(app)
+      .post("/api/jobs")
+      .set("x-forwarded-for", "203.0.113.10")
+      .attach("files", await createSamplePng(), { filename: "first.png", contentType: "image/png" });
+    const second = await request(app)
+      .post("/api/jobs")
+      .set("x-forwarded-for", "198.51.100.12")
+      .attach("files", await createSamplePng(), { filename: "second.png", contentType: "image/png" });
+
+    expect(first.status).toBe(202);
+    expect(second.status).toBe(429);
+  });
+
+  it("returns 503 before storing a job when tracked-job capacity is exhausted", async () => {
+    const directory = createTempDirectory();
+    const store = new JobStore({ rootDir: path.join(directory, "jobs"), maxTrackedJobs: 1 });
+    const app = createApp({ store, cleanupIntervalMs: 60_000 });
+    const sample = await createSamplePng();
+    const first = await request(app).post("/api/jobs").attach("files", sample, {
+      filename: "first.png", contentType: "image/png"
+    });
+    const second = await request(app).post("/api/jobs").attach("files", sample, {
+      filename: "second.png", contentType: "image/png"
+    });
+
+    expect(first.status).toBe(202);
+    expect(second.status).toBe(503);
+    expect(second.body.error).toBe("Service temporarily at capacity");
+    app.close();
+  });
+
+  it("marks temporary status, preview, and download responses private and uncached", async () => {
+    const { app } = createTestApp();
+    const response = await request(app).post("/api/jobs").attach("files", await createSamplePng(), {
+      filename: "cache.png", contentType: "image/png"
+    });
+    const jobId = response.body.jobId as string;
+    const taskId = response.body.tasks[0].taskId as string;
+    await waitForStatus(app, jobId, "complete");
+
+    const status = await request(app).get(`/api/jobs/${jobId}`);
+    const preview = await request(app).get(`/api/jobs/${jobId}/tasks/${taskId}/preview`);
+    const download = await request(app).get(`/api/jobs/${jobId}/tasks/${taskId}/download?format=png`);
+    expect(status.headers["cache-control"]).toBe("no-store, private");
+    expect(preview.headers["cache-control"]).toBe("no-store, private");
+    expect(download.headers["cache-control"]).toBe("no-store, private");
+  });
+
+  it("maps a removed active job to 410 through the atomic lookup path", async () => {
+    const { app, store } = createTestApp();
+    const response = await request(app).post("/api/jobs").attach("files", await createSamplePng(), {
+      filename: "expired.png", contentType: "image/png"
+    });
+    const jobId = response.body.jobId as string;
+    store.removeExpired(Number.MAX_SAFE_INTEGER);
+
+    expect((await request(app).get(`/api/jobs/${jobId}`)).status).toBe(410);
   });
 });

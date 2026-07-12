@@ -21,17 +21,43 @@ export async function createJob(
   preset: Preset,
   controls: ManualControls,
   outputFormat: OutputFormat,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  controlsByTask?: ManualControls[],
+  onProgress?: (percentage: number) => void
 ): Promise<JobSummary> {
   const body = new FormData();
   files.forEach((file) => body.append("files", file));
   body.append("preset", preset);
   body.append("controls", JSON.stringify(controls));
   body.append("outputFormat", outputFormat);
+  if (controlsByTask) body.append("controlsByTask", JSON.stringify(controlsByTask));
 
-  return readJson<JobSummary>(
-    await fetch("/api/jobs", { method: "POST", body, signal })
-  );
+  return new Promise<JobSummary>((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", "/api/jobs");
+    xhr.responseType = "json";
+    xhr.upload.onprogress = (event) => {
+      if (event.lengthComputable) onProgress?.(Math.round((event.loaded / event.total) * 100));
+    };
+    xhr.onload = () => {
+      const result = xhr.response as { error?: string } | JobSummary | null;
+      if (xhr.status >= 200 && xhr.status < 300) {
+        resolve(result as JobSummary);
+      } else {
+        reject(new Error(result && "error" in result ? result.error : "The request could not be completed."));
+      }
+    };
+    xhr.onerror = () => reject(new Error("The request could not be completed."));
+    xhr.onabort = () => reject(new DOMException("The request was aborted", "AbortError"));
+    if (signal) {
+      if (signal.aborted) {
+        xhr.abort();
+        return;
+      }
+      signal.addEventListener("abort", () => xhr.abort(), { once: true });
+    }
+    xhr.send(body);
+  });
 }
 
 export async function getJob(jobId: string, signal?: AbortSignal): Promise<JobStatus> {

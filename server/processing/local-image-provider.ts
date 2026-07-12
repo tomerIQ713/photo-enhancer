@@ -26,7 +26,12 @@ export class LocalImageProvider {
     }
 
     if (denoise > 0) {
-      image.median(denoise * 2 + 1);
+      const smallestDimension = Math.min(metadata.width ?? 1, metadata.height ?? 1);
+      const largestSafeWindow = smallestDimension % 2 === 0
+        ? smallestDimension - 1
+        : smallestDimension;
+      const medianSize = Math.min(denoise * 2 + 1, largestSafeWindow);
+      if (medianSize >= 3) image.median(medianSize);
     }
 
     if (sharpen > 0) {

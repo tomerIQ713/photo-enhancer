@@ -11,6 +11,7 @@ interface ImagePreviewProps {
 export function ImagePreview({ sourceFile, previewUrl, taskStatus, taskError, onEnhanceAnother }: ImagePreviewProps) {
   const [comparison, setComparison] = useState(50);
   const [originalObjectUrl, setOriginalObjectUrl] = useState<string>();
+  const [zoom, setZoom] = useState(1);
 
   useEffect(() => {
     if (!sourceFile || typeof URL.createObjectURL !== "function") {
@@ -20,11 +21,11 @@ export function ImagePreview({ sourceFile, previewUrl, taskStatus, taskError, on
     const objectUrl = URL.createObjectURL(sourceFile);
     setOriginalObjectUrl(objectUrl);
     return () => {
-      URL.revokeObjectURL(objectUrl);
+      if (typeof URL.revokeObjectURL === "function") URL.revokeObjectURL(objectUrl);
     };
   }, [sourceFile]);
 
-  useEffect(() => setComparison(50), [previewUrl, sourceFile]);
+  useEffect(() => { setComparison(50); setZoom(1); }, [previewUrl, sourceFile]);
 
   if (taskStatus === "failed") {
     return (
@@ -72,12 +73,17 @@ export function ImagePreview({ sourceFile, previewUrl, taskStatus, taskError, on
         <div><p className="section-kicker">Preview</p><h2 id="preview-heading">{isComplete ? "Before and after" : "Processing image"}</h2></div>
         <span className="preview-status">{isComplete ? "Ready to review" : "Working"}</span>
       </div>
-      <div className="comparison" style={{ "--comparison": `${comparison}%` } as CSSProperties}>
+        <div className="comparison" style={{ "--comparison": `${comparison}%`, "--zoom": zoom } as CSSProperties}>
         <img className="comparison-image base-image" src={before} alt="Original photo" />
         <div className="enhanced-clip"><img className="comparison-image" src={after} alt="Enhanced photo" /></div>
         {isComplete && <span className="comparison-label label-before">Before</span>}
         {isComplete && <span className="comparison-label label-after">After</span>}
       </div>
+      {isComplete && <div className="zoom-controls" role="group" aria-label="Preview zoom">
+        <button className="text-button" type="button" onClick={() => setZoom((current) => Math.min(2, current + 0.25))} aria-label="Zoom in">+</button>
+        <span>{Math.round(zoom * 100)}%</span>
+        <button className="text-button" type="button" onClick={() => setZoom(1)} aria-label="Fit to view">Fit</button>
+      </div>}
       {isComplete && (
         <label className="comparison-control">
           <span>Slide to compare</span>

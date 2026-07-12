@@ -48,6 +48,7 @@ export interface ImageTask {
   status: TaskStatus;
   outputPath?: string;
   outputFormat?: OutputFormat;
+  controls?: ManualControls;
   error?: string;
 }
 
