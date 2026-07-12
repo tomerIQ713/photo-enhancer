@@ -255,7 +255,8 @@ export function createApp(options: CreateAppOptions = {}): PhotoEnhancerApp {
             controls,
             outputFormat,
             controlsByTask,
-            upscaleMode
+            upscaleMode,
+            request.get("x-openrouter-key") || undefined
           );
         } catch (error) {
           if (error instanceof CapacityError) {

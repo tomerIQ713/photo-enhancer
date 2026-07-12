@@ -92,6 +92,7 @@ describe("Photo enhancer workbench", () => {
       expect.any(AbortSignal),
       [expect.objectContaining({ strength: 50 })],
       expect.any(Function),
+      undefined,
       undefined
     );
     expect(await screen.findByText(/complete/i)).toBeVisible();
@@ -250,7 +251,8 @@ describe("Photo enhancer workbench", () => {
       expect.any(AbortSignal),
       [expect.objectContaining({ strength: 52 })],
       expect.any(Function),
-      "ai"
+      "ai",
+      undefined
     );
     expect(screen.getByLabelText(/download format/i)).toBeDisabled();
     expect(screen.getByLabelText(/download format/i)).toHaveValue("jpg");
@@ -789,6 +791,7 @@ describe("Photo enhancer workbench", () => {
         expect.objectContaining({ strength: 80 })
       ],
       expect.any(Function),
+      undefined,
       undefined
     );
   });

@@ -5,6 +5,7 @@ import { DownloadActions } from "./components/DownloadActions";
 import { FileQueue } from "./components/FileQueue";
 import { ImagePreview } from "./components/ImagePreview";
 import { PresetControls } from "./components/PresetControls";
+import { SettingsModal, getStoredApiKey } from "./components/SettingsModal";
 import { UploadDropzone } from "./components/UploadDropzone";
 import "./styles.css";
 
@@ -49,6 +50,8 @@ export function App() {
   const [uploadProgress, setUploadProgress] = useState<number>();
   const [uploadConfig, setUploadConfig] = useState<UploadConfig>(DEFAULT_UPLOAD_CONFIG);
   const [pollVersion, setPollVersion] = useState(0);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [apiKey, setApiKey] = useState(() => getStoredApiKey());
   const sessionGeneration = useRef(0);
   const submitController = useRef<AbortController | undefined>(undefined);
   const pollController = useRef<AbortController | undefined>(undefined);
@@ -213,7 +216,8 @@ export function App() {
         controller.signal,
         controlsByFile,
         setUploadProgress,
-        preset === "upscale" ? upscaleMode : undefined
+        preset === "upscale" ? upscaleMode : undefined,
+        apiKey || undefined
       );
       if (controller.signal.aborted || sessionGeneration.current !== generation) return;
       setJobId(summary.jobId);
@@ -325,6 +329,10 @@ export function App() {
       <header className="topbar">
         <a className="brand" href="/" aria-label="Photo Enhancer home"><span className="brand-mark">PE</span> Photo Enhancer</a>
         <span className="session-note">No account needed · files expire automatically</span>
+        <button className="text-button settings-button" type="button" onClick={() => setSettingsOpen(true)} aria-label="Open settings">
+          <span className="settings-icon">⚙</span>
+          <span className="settings-label">Settings</span>
+        </button>
       </header>
       <div className="content-wrap">
         <section className="intro">
@@ -349,6 +357,7 @@ export function App() {
           </div>
         </div>
       </div>
+      <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} onSave={setApiKey} currentKey={apiKey} />
     </main>
   );
 }

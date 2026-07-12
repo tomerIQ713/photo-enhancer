@@ -44,7 +44,8 @@ export async function createJob(
   signal?: AbortSignal,
   controlsByTask?: ManualControls[],
   onProgress?: (percentage: number) => void,
-  upscaleMode?: UpscaleMode
+  upscaleMode?: UpscaleMode,
+  apiKey?: string
 ): Promise<JobSummary> {
   const body = new FormData();
   files.forEach((file) => body.append("files", file));
@@ -57,6 +58,7 @@ export async function createJob(
   return new Promise<JobSummary>((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     xhr.open("POST", "/api/jobs");
+    if (apiKey) xhr.setRequestHeader("x-openrouter-key", apiKey);
     xhr.responseType = "json";
     xhr.upload.onprogress = (event) => {
       if (event.lengthComputable) onProgress?.(Math.round((event.loaded / event.total) * 100));

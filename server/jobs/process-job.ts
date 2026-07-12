@@ -16,7 +16,8 @@ export interface PipelineLike {
     preset: Parameters<ProcessingPipeline["process"]>[1],
     controls: Parameters<ProcessingPipeline["process"]>[2],
     outputFormat: Parameters<ProcessingPipeline["process"]>[3],
-    upscaleMode: UpscaleMode
+    upscaleMode: UpscaleMode,
+    apiKey?: string
   ): Promise<Buffer>;
 }
 
@@ -86,7 +87,8 @@ async function processTask(
       job.preset,
       task.controls ?? job.controls,
       task.outputFormat ?? "png",
-      job.upscaleMode
+      job.upscaleMode,
+      job.apiKey
     );
     if (!Buffer.isBuffer(output) || output.length > maxOutputBytes) {
       throw new Error("Output byte limit exceeded");

@@ -97,14 +97,15 @@ export class JobStore {
     controls: ManualControls,
     outputFormat: OutputFormat = "png",
     controlsByTask?: ManualControls[],
-    upscaleMode: UpscaleMode = "classic"
+    upscaleMode: UpscaleMode = "classic",
+    apiKey?: string
   ): Job {
     const buffers = files.map((file) => ({
       id: file.id,
       buffer: fs.readFileSync(file.originalPath),
       metadata: file.metadata
     }));
-    return this.createFromBuffers(buffers, preset, controls, outputFormat, controlsByTask, upscaleMode);
+    return this.createFromBuffers(buffers, preset, controls, outputFormat, controlsByTask, upscaleMode, apiKey);
   }
 
   createFromBuffers(
@@ -113,7 +114,8 @@ export class JobStore {
     controls: ManualControls,
     outputFormat: OutputFormat = "png",
     controlsByTask?: ManualControls[],
-    upscaleMode: UpscaleMode = "classic"
+    upscaleMode: UpscaleMode = "classic",
+    apiKey?: string
   ): Job {
     const reservedBytes = files.reduce(
       (total, file) => total + file.buffer.length + this.maxOutputBytes,
@@ -147,6 +149,7 @@ export class JobStore {
       preset,
       controls: { ...controls },
       upscaleMode,
+      apiKey,
       tasks,
       createdAt,
       expiresAt: createdAt + this.ttlMs

@@ -13,10 +13,11 @@ export class ProcessingPipeline {
     preset: Preset,
     controls: ManualControls,
     outputFormat: OutputFormat,
-    upscaleMode: UpscaleMode = "classic"
+    upscaleMode: UpscaleMode = "classic",
+    apiKey?: string
   ): Promise<Buffer> {
     if (preset === "upscale" && upscaleMode === "ai") {
-      const aiResult = await this.openRouterProvider.enhanceImage(input, controls);
+      const aiResult = await this.openRouterProvider.enhanceImage(input, controls, apiKey);
       if (aiResult) {
         return this.localImageProvider.normalize(aiResult, outputFormat);
       }
@@ -25,7 +26,8 @@ export class ProcessingPipeline {
     const parameters = await this.openRouterProvider.analyze(
       input,
       preset,
-      controls
+      controls,
+      apiKey
     );
     return this.localImageProvider.apply(
       input,

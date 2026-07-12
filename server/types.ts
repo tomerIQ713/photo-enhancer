@@ -58,6 +58,7 @@ export interface Job {
   preset: Preset;
   controls: ManualControls;
   upscaleMode: UpscaleMode;
+  apiKey?: string;
   tasks: ImageTask[];
   createdAt: number;
   expiresAt: number;

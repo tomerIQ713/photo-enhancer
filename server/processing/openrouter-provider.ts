@@ -113,14 +113,16 @@ export class OpenRouterProvider {
   async analyze(
     input: Buffer,
     preset: Preset,
-    controls: ManualControls
+    controls: ManualControls,
+    apiKeyOverride?: string
   ): Promise<EnhancementParameters> {
+    const key = apiKeyOverride ?? this.apiKey;
     const fallback = presetDefaults(preset);
     if (process.env.E2E_FAKE_PROCESSING === "true") {
       return fallback;
     }
 
-    if (!this.apiKey) {
+    if (!key) {
       return fallback;
     }
 
@@ -209,13 +211,15 @@ export class OpenRouterProvider {
 
   async enhanceImage(
     input: Buffer,
-    controls: ManualControls
+    controls: ManualControls,
+    apiKeyOverride?: string
   ): Promise<Buffer | null> {
+    const key = apiKeyOverride ?? this.apiKey;
     if (process.env.E2E_FAKE_PROCESSING === "true") {
       return null;
     }
 
-    if (!this.apiKey) {
+    if (!key) {
       return null;
     }
 
@@ -235,7 +239,7 @@ export class OpenRouterProvider {
             {
               method: "POST",
               headers: {
-                Authorization: `Bearer ${this.apiKey}`,
+                Authorization: `Bearer ${key}`,
                 "Content-Type": "application/json"
               },
               body: JSON.stringify({

@@ -32,7 +32,8 @@ class DelayedPipeline implements PipelineLike {
     _preset: Preset,
     _controls: ManualControls,
     _outputFormat: OutputFormat,
-    _upscaleMode: UpscaleMode
+    _upscaleMode: UpscaleMode,
+    _apiKey?: string
   ): Promise<Buffer> {
     this.calls += 1;
     this.active += 1;
