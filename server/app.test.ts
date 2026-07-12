@@ -197,6 +197,49 @@ describe("photo jobs API", () => {
     expect(preview.body).toBeInstanceOf(Buffer);
   });
 
+  it("supports a fake-mode first failure followed by real retry processing", async () => {
+    const previousFakeProcessing = process.env.E2E_FAKE_PROCESSING;
+    process.env.E2E_FAKE_PROCESSING = "true";
+    const { app, pipeline } = createTestApp();
+
+    try {
+      const response = await request(app)
+        .post("/api/jobs")
+        .set("x-e2e-retry", "true")
+        .attach("files", await createSamplePng(), {
+          filename: "retry.png",
+          contentType: "image/png"
+        });
+      const jobId = response.body.jobId as string;
+      const taskId = response.body.tasks[0].taskId as string;
+
+      expect(response.status).toBe(202);
+      const failed = await waitForStatus(app, jobId, "failed");
+      expect(failed.body.tasks[0]).toMatchObject({
+        taskId,
+        status: "failed",
+        error: "Processing failed"
+      });
+      expect(pipeline.calls).toBe(0);
+
+      const retry = await request(app)
+        .post(`/api/jobs/${jobId}/tasks/${taskId}/retry`)
+        .send();
+
+      expect(retry.status).toBe(202);
+      const complete = await waitForStatus(app, jobId, "complete");
+      expect(complete.body.tasks[0]).toMatchObject({ taskId, status: "complete" });
+      expect(pipeline.calls).toBe(1);
+    } finally {
+      app.close();
+      if (previousFakeProcessing === undefined) {
+        delete process.env.E2E_FAKE_PROCESSING;
+      } else {
+        process.env.E2E_FAKE_PROCESSING = previousFakeProcessing;
+      }
+    }
+  });
+
   it("returns 404 for unknown resources and 410 for expired results", async () => {
     const { app, store } = createTestApp();
     const response = await request(app)

@@ -154,7 +154,10 @@ export function createApp(options: CreateAppOptions = {}): PhotoEnhancerApp {
         return;
       }
 
-      processor.startJob(job.id);
+      const failFirstTask =
+        process.env.E2E_FAKE_PROCESSING === "true" &&
+        request.get("x-e2e-retry") === "true";
+      processor.startJob(job.id, { failFirstTask });
       response.status(202).json({
         jobId: job.id,
         tasks: job.tasks.map((task) => ({ taskId: task.id, status: task.status }))

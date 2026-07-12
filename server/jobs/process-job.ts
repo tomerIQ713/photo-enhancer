@@ -24,6 +24,10 @@ export interface JobProcessorOptions {
   maxOutputBytes?: number;
 }
 
+export interface StartJobOptions {
+  failFirstTask?: boolean;
+}
+
 const SAFE_PROCESSING_ERROR = "Processing failed";
 
 function markTaskSafely(
@@ -45,7 +49,8 @@ async function processTask(
   jobId: string,
   taskId: string,
   maxOutputPixels: number,
-  maxOutputBytes: number
+  maxOutputBytes: number,
+  failFirstProcessing: boolean
 ): Promise<void> {
   const job = store.get(jobId);
   const task = job?.tasks.find((candidate) => candidate.id === taskId);
@@ -55,6 +60,10 @@ async function processTask(
 
   let temporaryOutputPath: string | undefined;
   try {
+    if (failFirstProcessing) {
+      throw new Error("E2E fake processing failure");
+    }
+
     markTaskSafely(store, jobId, taskId, { status: "analyzing", error: undefined });
     const sourcePixels = task.metadata.width * task.metadata.height;
     if (
@@ -102,7 +111,11 @@ export class JobProcessor {
   private readonly concurrency: number;
   private readonly maxOutputPixels: number;
   private readonly maxOutputBytes: number;
-  private readonly queue: Array<{ jobId: string; taskId: string }> = [];
+  private readonly queue: Array<{
+    jobId: string;
+    taskId: string;
+    failFirstProcessing: boolean;
+  }> = [];
   private readonly queued = new Set<string>();
   private active = 0;
 
@@ -119,31 +132,31 @@ export class JobProcessor {
     this.maxOutputBytes = options.maxOutputBytes ?? MAX_OUTPUT_BYTES;
   }
 
-  startJob(jobId: string): void {
+  startJob(jobId: string, options: StartJobOptions = {}): void {
     const job = this.store.get(jobId);
     if (!job) {
       return;
     }
-    for (const task of job.tasks) {
-      this.enqueue(jobId, task.id);
+    for (const [index, task] of job.tasks.entries()) {
+      this.enqueue(jobId, task.id, options.failFirstTask === true && index === 0);
     }
   }
 
   retryTask(jobId: string, taskId: string): ReturnType<JobStore["retryTask"]> {
     const result = this.store.retryTask(jobId, taskId);
     if (result === "queued") {
-      this.enqueue(jobId, taskId);
+      this.enqueue(jobId, taskId, false);
     }
     return result;
   }
 
-  private enqueue(jobId: string, taskId: string): void {
+  private enqueue(jobId: string, taskId: string, failFirstProcessing: boolean): void {
     const key = `${jobId}:${taskId}`;
     if (this.queued.has(key)) {
       return;
     }
     this.queued.add(key);
-    this.queue.push({ jobId, taskId });
+    this.queue.push({ jobId, taskId, failFirstProcessing });
     this.drain();
   }
 
@@ -162,7 +175,8 @@ export class JobProcessor {
         task.jobId,
         task.taskId,
         this.maxOutputPixels,
-        this.maxOutputBytes
+        this.maxOutputBytes,
+        task.failFirstProcessing
       ).finally(() => {
         this.active -= 1;
         this.drain();

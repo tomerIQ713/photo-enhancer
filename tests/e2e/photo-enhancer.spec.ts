@@ -17,16 +17,27 @@ async function uploadAndEnhance(page: Page): Promise<void> {
   await page.getByRole("button", { name: /enhance photos/i }).click();
 }
 
-test("uploads, enhances, compares, and downloads a photo", async ({ page }) => {
+test("uploads, enhances, compares, and downloads a photo", async ({ page, request }) => {
   await uploadAndEnhance(page);
 
   await expect(page.getByRole("slider", { name: /before and after/i })).toBeVisible();
   const download = page.getByRole("link", { name: /download png/i });
   await expect(download).toBeVisible();
 
+  const href = await download.getAttribute("href");
+  expect(href).toBeTruthy();
+  const downloadResponsePromise = request.get(new URL(href!, page.url()).toString());
   const downloadEvent = page.waitForEvent("download");
   await download.click();
-  expect((await downloadEvent).suggestedFilename()).toBe("photo-enhanced.png");
+  const [downloadResponse, browserDownload] = await Promise.all([
+    downloadResponsePromise,
+    downloadEvent
+  ]);
+  expect(downloadResponse.status()).toBe(200);
+  expect(downloadResponse.headers()["content-type"]).toContain("image/png");
+  expect((await downloadResponse.body()).length).toBeGreaterThan(0);
+  expect(await browserDownload.failure()).toBeNull();
+  expect(browserDownload.suggestedFilename()).toBe("photo-enhanced.png");
 });
 
 test("shows an error for an invalid image upload", async ({ page }) => {
@@ -42,68 +53,15 @@ test("shows an error for an invalid image upload", async ({ page }) => {
 });
 
 test("retries a failed task and shows its completed result", async ({ page }) => {
-  let jobId: string | undefined;
-  let taskId: string | undefined;
-  let failedResponseSent = false;
-
-  await page.route("**/api/jobs/**", async (route) => {
-    const request = route.request();
-    if (request.method() === "GET" && /\/api\/jobs\/[^/]+$/.test(request.url())) {
-      const response = await route.fetch();
-      const body = (await response.json()) as {
-        jobId: string;
-        preset: string;
-        controls: typeof controls;
-        createdAt: number;
-        expiresAt: number;
-        tasks: Array<Record<string, unknown> & { taskId: string }>;
-      };
-      jobId = body.jobId;
-      taskId = body.tasks[0]?.taskId;
-      if (failedResponseSent || !taskId) {
-        await route.fulfill({
-          status: response.status(),
-          headers: response.headers(),
-          body: JSON.stringify(body)
-        });
-        return;
-      }
-
-      failedResponseSent = true;
-      await route.fulfill({
-        contentType: "application/json",
-        body: JSON.stringify({
-          jobId,
-          preset: "auto",
-          controls,
-          createdAt: body.createdAt,
-          expiresAt: body.expiresAt,
-          tasks: [{
-            taskId,
-            status: "failed",
-            error: "Processing failed"
-          }]
-        })
-      });
-      return;
-    }
-
-    if (request.method() === "POST" && taskId && request.url().endsWith(`/tasks/${taskId}/retry`)) {
-      await route.fulfill({
-        status: 202,
-        contentType: "application/json",
-        body: JSON.stringify({ taskId, status: "queued" })
-      });
-      return;
-    }
-
-    await route.continue();
-  });
-
+  await page.setExtraHTTPHeaders({ "x-e2e-retry": "true" });
   await uploadAndEnhance(page);
   const retry = page.getByRole("button", { name: /retry .*\.png/i });
   await expect(retry).toBeVisible();
+  const retryResponsePromise = page.waitForResponse((response) =>
+    response.request().method() === "POST" && new URL(response.url()).pathname.endsWith("/retry")
+  );
   await retry.click();
+  expect((await retryResponsePromise).status()).toBe(202);
 
   await expect(page.getByRole("slider", { name: /before and after/i })).toBeVisible();
   await expect(page.getByRole("link", { name: /download png/i })).toBeVisible();
