@@ -67,6 +67,10 @@ export class OpenRouterProvider {
     controls: ManualControls
   ): Promise<EnhancementParameters> {
     const fallback = presetDefaults(preset);
+    if (process.env.E2E_FAKE_PROCESSING === "true") {
+      return fallback;
+    }
+
     if (!this.apiKey) {
       return fallback;
     }
