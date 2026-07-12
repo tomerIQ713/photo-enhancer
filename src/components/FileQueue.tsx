@@ -6,6 +6,7 @@ interface FileQueueProps {
   selectedTaskId?: string;
   onSelect: (taskId: string) => void;
   onRetry: (taskId: string) => void;
+  pendingRetryTaskId?: string;
   jobId?: string;
 }
 
@@ -17,7 +18,7 @@ const statusLabels: Record<JobTask["status"], string> = {
   failed: "Failed"
 };
 
-export function FileQueue({ files, tasks, selectedTaskId, onSelect, onRetry }: FileQueueProps) {
+export function FileQueue({ files, tasks, selectedTaskId, onSelect, onRetry, pendingRetryTaskId }: FileQueueProps) {
   return (
     <section className="panel queue-panel" aria-labelledby="queue-heading">
       <div className="panel-heading">
@@ -54,8 +55,14 @@ export function FileQueue({ files, tasks, selectedTaskId, onSelect, onRetry }: F
                   </span>}
                 </button>
                 {task?.status === "failed" && (
-                  <button className="text-button retry-button" type="button" onClick={() => onRetry(task.taskId)}>
-                    Retry
+                    <button
+                      className="text-button retry-button"
+                      type="button"
+                      onClick={() => onRetry(task.taskId)}
+                      disabled={pendingRetryTaskId === task.taskId}
+                      aria-label={`Retry ${file.name}`}
+                    >
+                    {pendingRetryTaskId === task.taskId ? "Retrying..." : "Retry"}
                   </button>
                 )}
               </li>

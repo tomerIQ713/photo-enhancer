@@ -26,6 +26,7 @@ export function App() {
   const [tasks, setTasks] = useState<JobTask[]>([]);
   const [selectedTaskId, setSelectedTaskId] = useState<string>();
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [pendingRetryTaskId, setPendingRetryTaskId] = useState<string>();
   const [error, setError] = useState<string>();
   const [pollingError, setPollingError] = useState<string>();
   const [canRetryStatus, setCanRetryStatus] = useState(false);
@@ -97,12 +98,14 @@ export function App() {
     submitController.current?.abort();
     pollController.current?.abort();
     retryController.current?.abort();
+    retryController.current = undefined;
     setIsSubmitting(false);
     setFiles(nextFiles);
     setTasks([]);
     setJobId(undefined);
     setSubmittedFormat(undefined);
     setSelectedTaskId(undefined);
+    setPendingRetryTaskId(undefined);
     setError(undefined);
     setPollingError(undefined);
     setCanRetryStatus(false);
@@ -114,13 +117,22 @@ export function App() {
       return;
     }
     if (isSubmitting) return;
+    sessionGeneration.current += 1;
+    const generation = sessionGeneration.current;
+    submitController.current?.abort();
+    pollController.current?.abort();
+    retryController.current?.abort();
+    retryController.current = undefined;
+    setJobId(undefined);
+    setTasks([]);
+    setSelectedTaskId(undefined);
+    setSubmittedFormat(undefined);
+    setPendingRetryTaskId(undefined);
     setError(undefined);
     setPollingError(undefined);
     setCanRetryStatus(false);
     setIsSubmitting(true);
-    const generation = sessionGeneration.current;
     const controller = new AbortController();
-    submitController.current?.abort();
     submitController.current = controller;
     const format = outputFormat;
     setSubmittedFormat(format);
@@ -143,20 +155,28 @@ export function App() {
   };
 
   const handleRetry = async (taskId: string) => {
-    if (!jobId) return;
+    if (!jobId || pendingRetryTaskId) return;
     const generation = sessionGeneration.current;
     const controller = new AbortController();
     retryController.current?.abort();
     retryController.current = controller;
+    setPendingRetryTaskId(taskId);
     setError(undefined);
     try {
       await retryTask(jobId, taskId, controller.signal);
       if (controller.signal.aborted || sessionGeneration.current !== generation) return;
       setTasks((current) => current.map((task) => task.taskId === taskId ? { ...task, status: "queued", error: undefined } : task));
       setSelectedTaskId(taskId);
+      setPollingError(undefined);
+      setCanRetryStatus(false);
       setPollVersion((current) => current + 1);
     } catch (retryError) {
       if (!controller.signal.aborted && sessionGeneration.current === generation) setError(getErrorMessage(retryError));
+    } finally {
+      if (sessionGeneration.current === generation && retryController.current === controller) {
+        retryController.current = undefined;
+        setPendingRetryTaskId(undefined);
+      }
     }
   };
 
@@ -191,7 +211,7 @@ export function App() {
           </div>
         )}
         <div className="workbench-grid">
-          <FileQueue files={files} tasks={tasks} selectedTaskId={selectedTaskId} onSelect={setSelectedTaskId} onRetry={handleRetry} jobId={jobId} />
+          <FileQueue files={files} tasks={tasks} selectedTaskId={selectedTaskId} onSelect={setSelectedTaskId} onRetry={handleRetry} pendingRetryTaskId={pendingRetryTaskId} jobId={jobId} />
           <ImagePreview sourceFile={selectedFile} previewUrl={selectedOutputUrl} taskStatus={selectedTask?.status} taskError={selectedTask?.error} />
           <div className="controls-column">
             <PresetControls preset={preset} controls={controls} outputFormat={formatForSession} formatDisabled={Boolean(submittedFormat)} disabled={isSubmitting} onPresetChange={setPreset} onControlsChange={setControls} onOutputFormatChange={setOutputFormat} onSubmit={handleSubmit} />
