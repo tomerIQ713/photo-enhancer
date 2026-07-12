@@ -26,6 +26,8 @@ export interface JobStoreOptions {
 }
 
 const DEFAULT_ROOT_DIR = path.join(os.tmpdir(), "photo-enhancer");
+const UUID_DIRECTORY_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 function cloneJob(job: Job): Job {
   return {
@@ -40,7 +42,7 @@ function cloneJob(job: Job): Job {
 
 export class JobStore {
   private readonly jobs = new Map<string, Job>();
-  private readonly expiredIds = new Set<string>();
+  private readonly expiredIds = new Map<string, number>();
   private readonly rootDir: string;
   private readonly ttlMs: number;
   private readonly now: () => number;
@@ -49,6 +51,7 @@ export class JobStore {
     this.rootDir = options.rootDir ?? DEFAULT_ROOT_DIR;
     this.ttlMs = options.ttlMs ?? JOB_TTL_MS;
     this.now = options.now ?? Date.now;
+    this.sweepOrphanedJobs(this.now());
   }
 
   get size(): number {
@@ -116,8 +119,14 @@ export class JobStore {
     return job ? cloneJob(job) : undefined;
   }
 
-  isExpired(id: string): boolean {
-    return this.expiredIds.has(id);
+  isExpired(id: string, now = this.now()): boolean {
+    this.pruneExpiredIds(now);
+    const job = this.jobs.get(id);
+    if (job) {
+      return job.expiresAt <= now;
+    }
+    const expiresAt = this.expiredIds.get(id);
+    return expiresAt !== undefined && expiresAt > now;
   }
 
   markTask(id: string, taskId: string, update: TaskUpdate): void {
@@ -134,18 +143,80 @@ export class JobStore {
     return this.jobs.get(id)?.tasks[0]?.outputFormat;
   }
 
+  retryTask(
+    id: string,
+    taskId: string,
+    now = this.now()
+  ): "queued" | "expired" | "missing" | "not_failed" {
+    if (this.isExpired(id, now)) {
+      return "expired";
+    }
+    const job = this.jobs.get(id);
+    const task = job?.tasks.find((candidate) => candidate.id === taskId);
+    if (!job || !task) {
+      return "missing";
+    }
+    if (task.status !== "failed") {
+      return "not_failed";
+    }
+
+    Object.assign(task, {
+      status: "queued" as const,
+      error: undefined,
+      outputPath: undefined
+    });
+    return "queued";
+  }
+
   removeExpired(now = this.now()): number {
     let removed = 0;
+    this.pruneExpiredIds(now);
     for (const [id, job] of this.jobs.entries()) {
       if (job.expiresAt > now) {
         continue;
       }
 
-      fs.rmSync(path.join(this.rootDir, id), { recursive: true, force: true });
-      this.jobs.delete(id);
-      this.expiredIds.add(id);
-      removed += 1;
+      try {
+        fs.rmSync(path.join(this.rootDir, id), { recursive: true, force: true });
+        this.jobs.delete(id);
+        this.expiredIds.set(id, job.expiresAt + this.ttlMs);
+        removed += 1;
+      } catch {
+        // Keep the job for the next cleanup attempt.
+      }
     }
     return removed;
+  }
+
+  private pruneExpiredIds(now: number): void {
+    for (const [id, expiresAt] of this.expiredIds.entries()) {
+      if (expiresAt <= now) {
+        this.expiredIds.delete(id);
+      }
+    }
+  }
+
+  private sweepOrphanedJobs(now: number): void {
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(this.rootDir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+
+    for (const entry of entries) {
+      if (!entry.isDirectory() || !UUID_DIRECTORY_PATTERN.test(entry.name)) {
+        continue;
+      }
+      const directory = path.join(this.rootDir, entry.name);
+      try {
+        const stats = fs.statSync(directory);
+        if (now - stats.mtimeMs >= this.ttlMs) {
+          fs.rmSync(directory, { recursive: true, force: true });
+        }
+      } catch {
+        // A startup sweep is best-effort and never blocks server startup.
+      }
+    }
   }
 }

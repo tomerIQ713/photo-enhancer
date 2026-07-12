@@ -49,10 +49,6 @@ function parseControls(input: unknown): ManualControls {
   return validateManualControls(JSON.parse(field));
 }
 
-function validationMessage(error: unknown): string {
-  return error instanceof Error ? error.message : "Invalid request";
-}
-
 function isExpired(store: JobStore, jobId: string, now: () => number): boolean {
   const job = store.get(jobId);
   if (!job) {
@@ -73,11 +69,15 @@ function taskResponse(task: ImageTask): Record<string, unknown> {
   if (task.error) {
     response.error = task.error;
   }
-  if (task.status === "complete" && task.outputPath && fs.existsSync(task.outputPath)) {
-    response.result = {
-      format: task.outputFormat,
-      size: fs.statSync(task.outputPath).size
-    };
+  if (task.status === "complete" && task.outputPath) {
+    try {
+      response.result = {
+        format: task.outputFormat,
+        size: fs.statSync(task.outputPath).size
+      };
+    } catch {
+      // A result may expire between status reads; omit its temporary metadata.
+    }
   }
   return response;
 }
@@ -110,15 +110,23 @@ export function createApp(options: CreateAppOptions = {}): PhotoEnhancerApp {
         return;
       }
 
+      let preset: Preset;
+      let controls: ManualControls;
+      let outputFormat: OutputFormat;
+      let acceptedFiles: Array<{
+        id: string;
+        buffer: Buffer;
+        metadata: Awaited<ReturnType<typeof validateUpload>>;
+      }>;
       try {
         const files = (request.files as Express.Multer.File[] | undefined) ?? [];
         validateBatchSize(files.length);
-        const preset = presetSchema.parse(request.body?.preset ?? "auto") as Preset;
-        const controls = parseControls(request.body?.controls);
-        const outputFormat = outputFormatSchema.parse(
+        preset = presetSchema.parse(request.body?.preset ?? "auto") as Preset;
+        controls = parseControls(request.body?.controls);
+        outputFormat = outputFormatSchema.parse(
           request.body?.outputFormat ?? "png"
         ) as OutputFormat;
-        const acceptedFiles = [];
+        acceptedFiles = [];
         for (const file of files) {
           const metadata = await validateUpload(file);
           acceptedFiles.push({
@@ -127,20 +135,29 @@ export function createApp(options: CreateAppOptions = {}): PhotoEnhancerApp {
             metadata
           });
         }
-        const job = store.createFromBuffers(
+      } catch {
+        response.status(400).json({ error: "Invalid request" });
+        return;
+      }
+
+      let job: ReturnType<JobStore["createFromBuffers"]>;
+      try {
+        job = store.createFromBuffers(
           acceptedFiles,
           preset,
           controls,
           outputFormat
         );
-        processor.startJob(job.id);
-        response.status(202).json({
-          jobId: job.id,
-          tasks: job.tasks.map((task) => ({ taskId: task.id, status: task.status }))
-        });
-      } catch (caughtError) {
-        response.status(400).json({ error: validationMessage(caughtError) });
+      } catch {
+        response.status(500).json({ error: "Internal server error" });
+        return;
       }
+
+      processor.startJob(job.id);
+      response.status(202).json({
+        jobId: job.id,
+        tasks: job.tasks.map((task) => ({ taskId: task.id, status: task.status }))
+      });
     });
   });
 
@@ -183,7 +200,19 @@ export function createApp(options: CreateAppOptions = {}): PhotoEnhancerApp {
       response.status(409).json({ error: "Task is not retryable" });
       return;
     }
-    processor.retryTask(result.job.id, task.id);
+    const retryResult = processor.retryTask(result.job.id, task.id);
+    if (retryResult === "expired") {
+      response.status(410).json({ error: "Job expired" });
+      return;
+    }
+    if (retryResult === "missing") {
+      response.status(404).json({ error: "Task not found" });
+      return;
+    }
+    if (retryResult === "not_failed") {
+      response.status(409).json({ error: "Task is not retryable" });
+      return;
+    }
     response.status(202).json({ taskId: task.id, status: "queued" });
   });
 
@@ -218,7 +247,9 @@ export function createApp(options: CreateAppOptions = {}): PhotoEnhancerApp {
       response.status(404).json({ error: "Result not available" });
       return;
     }
-    if (!fs.existsSync(task.outputPath)) {
+    try {
+      fs.statSync(task.outputPath);
+    } catch {
       response.status(410).json({ error: "Result expired" });
       return;
     }

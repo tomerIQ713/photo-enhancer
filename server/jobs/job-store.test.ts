@@ -1,8 +1,9 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 import sharp from "sharp";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { JobStore } from "./job-store";
 import type { ManualControls, StoredUpload } from "../types";
 
@@ -113,5 +114,80 @@ describe("JobStore", () => {
     expect(job.tasks[0].originalPath).toContain(path.join("jobs", job.id));
     expect(fs.readFileSync(job.tasks[0].originalPath)).toEqual(sample);
     expect(store.getOutputFormat(job.id)).toBe("jpg");
+  });
+
+  it("prunes expired identifiers after a finite retention window", async () => {
+    const directory = createTempDirectory();
+    const originalPath = path.join(directory, "first.png");
+    fs.writeFileSync(originalPath, await createSamplePng());
+    const store = new JobStore({
+      rootDir: path.join(directory, "jobs"),
+      ttlMs: 100,
+      now: () => 1_000
+    });
+    const job = store.create([upload(originalPath, "upload-a")], "auto", defaultControls);
+
+    store.removeExpired(1_100);
+
+    expect(store.isExpired(job.id, 1_100)).toBe(true);
+    expect(store.isExpired(job.id, 1_201)).toBe(false);
+  });
+
+  it("sweeps only old UUID job directories during startup", () => {
+    const directory = createTempDirectory();
+    const rootDir = path.join(directory, "jobs");
+    const oldJobDir = path.join(rootDir, randomUUID());
+    const recentJobDir = path.join(rootDir, randomUUID());
+    const unrelatedDir = path.join(rootDir, "keep-me");
+    fs.mkdirSync(oldJobDir, { recursive: true });
+    fs.mkdirSync(recentJobDir, { recursive: true });
+    fs.mkdirSync(unrelatedDir, { recursive: true });
+    fs.utimesSync(oldJobDir, 0.7, 0.7);
+    fs.utimesSync(recentJobDir, 0.95, 0.95);
+    fs.utimesSync(unrelatedDir, 0.7, 0.7);
+
+    new JobStore({ rootDir, ttlMs: 100, now: () => 1_000 });
+
+    expect(fs.existsSync(oldJobDir)).toBe(false);
+    expect(fs.existsSync(recentJobDir)).toBe(true);
+    expect(fs.existsSync(unrelatedDir)).toBe(true);
+  });
+
+  it("keeps a failed cleanup job retryable without escaping filesystem errors", async () => {
+    const directory = createTempDirectory();
+    const originalPath = path.join(directory, "first.png");
+    fs.writeFileSync(originalPath, await createSamplePng());
+    const store = new JobStore({
+      rootDir: path.join(directory, "jobs"),
+      ttlMs: 100,
+      now: () => 1_000
+    });
+    const job = store.create([upload(originalPath, "upload-a")], "auto", defaultControls);
+    const removeSpy = vi.spyOn(fs, "rmSync").mockImplementationOnce(() => {
+      throw new Error("private filesystem failure");
+    });
+
+    expect(() => store.removeExpired(1_100)).not.toThrow();
+    expect(store.get(job.id)).toBeDefined();
+    expect(store.removeExpired(1_100)).toBe(1);
+
+    removeSpy.mockRestore();
+  });
+
+  it("returns an expired transition instead of throwing when retry races cleanup", async () => {
+    const directory = createTempDirectory();
+    const originalPath = path.join(directory, "first.png");
+    fs.writeFileSync(originalPath, await createSamplePng());
+    const store = new JobStore({
+      rootDir: path.join(directory, "jobs"),
+      ttlMs: 100,
+      now: () => 1_000
+    });
+    const job = store.create([upload(originalPath, "upload-a")], "auto", defaultControls);
+    const taskId = job.tasks[0].id;
+    store.markTask(job.id, taskId, { status: "failed", error: "Processing failed" });
+    store.removeExpired(1_100);
+
+    expect(store.retryTask(job.id, taskId, 1_100)).toBe("expired");
   });
 });

@@ -204,4 +204,71 @@ describe("photo jobs API", () => {
       (await request(app).get(`/api/jobs/${jobId}/tasks/${taskId}/download?format=png`)).status
     ).toBe(410);
   });
+
+  it("returns a sanitized 500 when accepted storage fails", async () => {
+    const directory = createTempDirectory();
+    class FailingStore extends JobStore {
+      override createFromBuffers(..._args: Parameters<JobStore["createFromBuffers"]>): never {
+        throw new Error("write failed at C:\\private\\photo-enhancer\\secret");
+      }
+    }
+    const app = createApp({
+      store: new FailingStore({ rootDir: path.join(directory, "jobs") }),
+      pipeline: new TestPipeline(),
+      cleanupIntervalMs: 60_000
+    });
+
+    const response = await request(app)
+      .post("/api/jobs")
+      .attach("files", await createSamplePng(), {
+        filename: "sample.png",
+        contentType: "image/png"
+      });
+
+    expect(response.status).toBe(500);
+    expect(response.body.error).toBe("Internal server error");
+    expect(JSON.stringify(response.body)).not.toContain("private");
+    app.close();
+  });
+
+  it("maps a missing temporary result to 410 without a status-route exception", async () => {
+    const { app, store } = createTestApp();
+    const response = await request(app)
+      .post("/api/jobs")
+      .attach("files", await createSamplePng(), {
+        filename: "sample.png",
+        contentType: "image/png"
+      });
+    const jobId = response.body.jobId as string;
+    await waitForStatus(app, jobId, "complete");
+    const outputPath = store.get(jobId)?.tasks[0].outputPath;
+    expect(outputPath).toEqual(expect.any(String));
+    fs.unlinkSync(outputPath as string);
+
+    const status = await request(app).get(`/api/jobs/${jobId}`);
+    const download = await request(app).get(
+      `/api/jobs/${jobId}/tasks/${response.body.tasks[0].taskId}/download?format=png`
+    );
+    expect(status.status).toBe(200);
+    expect(status.body.tasks[0].result).toBeUndefined();
+    expect(download.status).toBe(410);
+  });
+
+  it("returns 410 when retry observes an expired job", async () => {
+    const { app, store } = createTestApp();
+    const response = await request(app)
+      .post("/api/jobs")
+      .attach("files", await createSamplePng(), {
+        filename: "sample.png",
+        contentType: "image/png"
+      });
+    const jobId = response.body.jobId as string;
+    const taskId = response.body.tasks[0].taskId as string;
+    store.markTask(jobId, taskId, { status: "failed", error: "Processing failed" });
+    store.removeExpired(Number.MAX_SAFE_INTEGER);
+
+    const retry = await request(app).post(`/api/jobs/${jobId}/tasks/${taskId}/retry`).send();
+
+    expect(retry.status).toBe(410);
+  });
 });
