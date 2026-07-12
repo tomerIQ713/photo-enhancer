@@ -133,6 +133,22 @@ describe("JobStore", () => {
     expect(store.isExpired(job.id, 1_201)).toBe(false);
   });
 
+  it("uses the removeExpired classification time for tombstone retention despite clock skew", async () => {
+    const directory = createTempDirectory();
+    const originalPath = path.join(directory, "first.png");
+    fs.writeFileSync(originalPath, await createSamplePng());
+    const store = new JobStore({
+      rootDir: path.join(directory, "jobs"),
+      ttlMs: 100,
+      now: () => 1_000
+    });
+    const job = store.create([upload(originalPath, "upload-a")], "auto", defaultControls);
+
+    expect(store.removeExpired(2_000)).toBe(1);
+    expect(store.isExpired(job.id, 2_100)).toBe(true);
+    expect(store.isExpired(job.id, 2_101)).toBe(false);
+  });
+
   it("sweeps only old UUID job directories during startup", () => {
     const directory = createTempDirectory();
     const rootDir = path.join(directory, "jobs");

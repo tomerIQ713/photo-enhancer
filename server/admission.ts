@@ -45,3 +45,45 @@ export class RateLimiter {
     return true;
   }
 }
+
+export interface UploadMemoryBudgetOptions {
+  maxBytes: number;
+  reservationBytes: number;
+}
+
+export type ReleaseUploadMemory = () => void;
+
+export class UploadMemoryBudget {
+  private reserved = 0;
+  private readonly maxBytes: number;
+  private readonly reservationBytes: number;
+
+  constructor(options: UploadMemoryBudgetOptions) {
+    if (
+      !Number.isSafeInteger(options.maxBytes) ||
+      !Number.isSafeInteger(options.reservationBytes) ||
+      options.maxBytes <= 0 ||
+      options.reservationBytes <= 0 ||
+      options.reservationBytes > options.maxBytes
+    ) {
+      throw new Error("Invalid upload memory budget");
+    }
+    this.maxBytes = options.maxBytes;
+    this.reservationBytes = options.reservationBytes;
+  }
+
+  get reservedBytes(): number {
+    return this.reserved;
+  }
+
+  tryAcquire(): ReleaseUploadMemory | undefined {
+    if (this.reserved + this.reservationBytes > this.maxBytes) return undefined;
+    this.reserved += this.reservationBytes;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.reserved -= this.reservationBytes;
+    };
+  }
+}

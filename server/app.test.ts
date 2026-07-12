@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import sharp from "sharp";
@@ -7,7 +8,8 @@ import request from "supertest";
 import { afterEach, describe, expect, it } from "vitest";
 import { createApp } from "./app";
 import { JobStore } from "./jobs/job-store";
-import { RateLimiter } from "./admission";
+import { RateLimiter, UploadMemoryBudget } from "./admission";
+import { MAX_FILE_BYTES, MAX_PIXELS, MAX_UPLOAD_MEMORY_RESERVATION_BYTES } from "./config";
 import type { ManualControls, OutputFormat, Preset } from "./types";
 
 const defaultControls: ManualControls = {
@@ -91,6 +93,85 @@ afterEach(() => {
 });
 
 describe("photo jobs API", () => {
+  it("bounds concurrent multipart requests before Multer and releases reservations on abort/error/success", async () => {
+    const directory = createTempDirectory();
+    const budget = new UploadMemoryBudget({
+      maxBytes: MAX_UPLOAD_MEMORY_RESERVATION_BYTES,
+      reservationBytes: MAX_UPLOAD_MEMORY_RESERVATION_BYTES
+    });
+    const app = createApp({
+      store: new JobStore({ rootDir: path.join(directory, "jobs") }),
+      uploadMemoryBudget: budget,
+      cleanupIntervalMs: 60_000
+    });
+    const server = http.createServer(app);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("Test server did not bind");
+
+    const boundary = "upload-boundary";
+    const firstRequest = http.request({
+      method: "POST",
+      hostname: "127.0.0.1",
+      port: address.port,
+      path: "/api/jobs",
+      headers: { "content-type": `multipart/form-data; boundary=${boundary}` }
+    });
+    const firstResponse = new Promise<number>((resolve) => {
+      firstRequest.once("response", (response) => {
+        response.resume();
+        response.once("end", () => resolve(response.statusCode ?? 0));
+      });
+    });
+    firstRequest.write(`--${boundary}\r\n`);
+    for (let attempt = 0; attempt < 20 && budget.reservedBytes === 0; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 1));
+    }
+
+    const rejected = await request(app)
+      .post("/api/jobs")
+      .attach("files", await createSamplePng(), { filename: "rejected.png", contentType: "image/png" });
+    expect(rejected.status).toBe(503);
+    expect(rejected.body.error).toBe("Service temporarily at upload capacity");
+
+    firstRequest.end();
+    expect(await firstResponse).toBe(400);
+    for (let attempt = 0; attempt < 20 && budget.reservedBytes !== 0; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 1));
+    }
+    expect(budget.reservedBytes).toBe(0);
+
+    const abortedRequest = http.request({
+      method: "POST",
+      hostname: "127.0.0.1",
+      port: address.port,
+      path: "/api/jobs",
+      headers: { "content-type": `multipart/form-data; boundary=${boundary}` }
+    });
+    abortedRequest.on("error", () => undefined);
+    abortedRequest.write(`--${boundary}\r\n`);
+    for (let attempt = 0; attempt < 20 && budget.reservedBytes === 0; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 1));
+    }
+    abortedRequest.destroy();
+    for (let attempt = 0; attempt < 20 && budget.reservedBytes !== 0; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 1));
+    }
+    expect(budget.reservedBytes).toBe(0);
+
+    const accepted = await request(app)
+      .post("/api/jobs")
+      .attach("files", await createSamplePng(), { filename: "accepted.png", contentType: "image/png" });
+    expect(accepted.status).toBe(202);
+    for (let attempt = 0; attempt < 20 && budget.reservedBytes !== 0; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 1));
+    }
+    expect(budget.reservedBytes).toBe(0);
+
+    await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+    app.close();
+  });
+
   it("accepts a valid single-image upload and returns a job id", async () => {
     const { app } = createTestApp();
 
@@ -119,9 +200,36 @@ describe("photo jobs API", () => {
       });
 
     expect(response.status).toBe(400);
-    expect(response.body.error).toEqual(expect.any(String));
+    expect(response.body.error).toBe("Unsupported image. Accepted formats are JPEG, PNG, WebP, and AVIF.");
     expect(store.size).toBe(0);
   });
+
+  it("maps Multer and validation categories to safe upload messages", async () => {
+    const { app } = createTestApp();
+    const oversized = await request(app)
+      .post("/api/jobs")
+      .attach("files", Buffer.alloc(MAX_FILE_BYTES + 1), {
+        filename: "large.png",
+        contentType: "image/png"
+      });
+    const tooMany = request(app).post("/api/jobs");
+    const sample = await createSamplePng();
+    for (let index = 0; index < 6; index += 1) {
+      tooMany.attach("files", sample, { filename: `image-${index}.png`, contentType: "image/png" });
+    }
+    const batch = await tooMany;
+    const pixels = await sharp({
+      create: { width: 5_001, height: 5_001, channels: 3, background: { r: 0, g: 0, b: 0 } }
+    }).png().toBuffer();
+    const pixelLimit = await request(app)
+      .post("/api/jobs")
+      .attach("files", pixels, { filename: "huge.png", contentType: "image/png" });
+
+    expect(oversized.body.error).toBe("File too large. Each photo must be 10 MB or smaller.");
+    expect(batch.body.error).toBe("Choose between 1 and 5 photos.");
+    expect(pixelLimit.body.error).toBe(`Image exceeds the ${MAX_PIXELS.toLocaleString("en-US")} pixel limit.`);
+    expect(JSON.stringify({ oversized, batch, pixelLimit })).not.toContain("C:\\");
+  }, 20_000);
 
   it("validates controls and output format at the multipart boundary", async () => {
     const { app } = createTestApp();

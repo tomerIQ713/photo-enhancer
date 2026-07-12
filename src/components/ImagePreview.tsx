@@ -6,9 +6,10 @@ interface ImagePreviewProps {
   taskStatus?: string;
   taskError?: string;
   onEnhanceAnother?: () => void;
+  resultUnavailable?: boolean;
 }
 
-export function ImagePreview({ sourceFile, previewUrl, taskStatus, taskError, onEnhanceAnother }: ImagePreviewProps) {
+export function ImagePreview({ sourceFile, previewUrl, taskStatus, taskError, onEnhanceAnother, resultUnavailable = false }: ImagePreviewProps) {
   const [comparison, setComparison] = useState(50);
   const [originalObjectUrl, setOriginalObjectUrl] = useState<string>();
   const [zoom, setZoom] = useState(1);
@@ -40,7 +41,7 @@ export function ImagePreview({ sourceFile, previewUrl, taskStatus, taskError, on
     );
   }
 
-  if (taskStatus === "complete" && !previewUrl) {
+  if (resultUnavailable || (taskStatus === "complete" && !previewUrl)) {
     return (
       <section className="preview-stage unavailable-preview" aria-labelledby="preview-heading">
         <div className="preview-header">
@@ -85,10 +86,13 @@ export function ImagePreview({ sourceFile, previewUrl, taskStatus, taskError, on
         <button className="text-button" type="button" onClick={() => setZoom(1)} aria-label="Fit to view">Fit</button>
       </div>}
       {isComplete && (
-        <label className="comparison-control">
-          <span>Slide to compare</span>
-          <input type="range" min="0" max="100" value={comparison} aria-label="Before and after comparison" onChange={(event) => setComparison(Number(event.target.value))} />
-        </label>
+        <>
+          <label className="comparison-control">
+            <span>Slide to compare</span>
+            <input type="range" min="0" max="100" value={comparison} aria-label="Before and after comparison" onChange={(event) => setComparison(Number(event.target.value))} />
+          </label>
+          {onEnhanceAnother && <button className="primary-button" type="button" onClick={onEnhanceAnother}>Enhance another</button>}
+        </>
       )}
     </section>
   );

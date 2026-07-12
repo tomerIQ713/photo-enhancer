@@ -138,3 +138,59 @@ Completed the approved final review fixes without modifying the approved design 
 - Admission state is intentionally process-local for this in-memory MVP; multiple server processes would need a shared limiter/store before deployment behind a load balancer.
 - The temporary-storage reservation includes the maximum configured output bytes for every task, so capacity can be conservative until job expiration cleanup releases it.
 - The full suite uses mocked OpenRouter responses and fake E2E mode; live provider credentials were not used or tested in this environment.
+
+## Final Fixes
+
+### Status
+
+DONE
+
+Completed all remaining final-review findings without modifying the approved design or implementation plan.
+
+### Requirement-to-Test Mapping
+
+- Process-wide upload memory bound: `server/app.test.ts` holds a multipart request open without a `Content-Length`, proves a concurrent request receives `503`, and proves reservations release after parser error, client abort, and successful upload; Multer file, part, and batch limits remain enabled as the second guard.
+- Preset propagation: `src/App.test.tsx` proves selecting Upscale applies defaults to every queued image, later editing remains per-image, and newly selected files inherit the active preset defaults.
+- Successful-session reset: `src/App.test.tsx` proves the normal completed comparison renders `Enhance another` and clears the temporary session; the existing complete-without-result test covers the same action for unavailable results.
+- Expiration tombstone clock consistency: `server/jobs/job-store.test.ts` proves tombstone retention uses the `removeExpired(now)` classification timestamp under a skewed store clock.
+- HTTP status and expired polling state: `src/api.test.ts` proves `ApiError` preserves status `410`; `src/App.test.tsx` proves polling `410` renders the explicit accessible unavailable state and fresh-upload action instead of transient retry UI.
+- Stale bitmap validation: `src/App.test.tsx` proves stale selections cannot call `onFilesSelected` or overwrite a newer validation error, while current valid selections still complete.
+- Safe upload error mapping: `server/app.test.ts` covers Multer file-size and batch-limit errors plus validation pixel-limit and unsupported-content errors, asserting useful messages without filesystem/provider details; the E2E invalid-upload flow verifies the user-visible unsupported-content message.
+
+### Changed Files
+
+- `.env.example`: documents the process-wide upload memory budget.
+- `server/admission.ts`: adds the process-wide upload memory budget and idempotent release handle.
+- `server/config.ts`: adds the upload budget and conservative per-request reservation bound.
+- `server/app.ts`: acquires upload memory before Multer, releases it on parser completion/error/abort/response close, and maps known upload errors safely.
+- `server/app.test.ts`: adds concurrent admission, abort/error/success release, and safe upload-message coverage.
+- `server/jobs/job-store.ts`: classifies expiration tombstones from the supplied cleanup timestamp.
+- `server/jobs/job-store.test.ts`: adds the clock-skew regression.
+- `src/api.ts`: adds the status-preserving `ApiError`.
+- `src/api.test.ts`: adds HTTP status preservation coverage.
+- `src/App.tsx`: propagates preset defaults to the queue, initializes new selections from the active preset, handles polling `410`, and resets unavailable/successful sessions.
+- `src/App.test.tsx`: adds preset, reset, expired-polling, and stale-validation coverage.
+- `src/components/ImagePreview.tsx`: renders `Enhance another` for successful comparisons and explicit unavailable states.
+- `src/components/UploadDropzone.tsx`: adds selection-generation and abort guards around bitmap validation.
+- `tests/e2e/photo-enhancer.spec.ts`: aligns invalid-upload assertion with the safe server message.
+
+### Commands And Actual Results
+
+- `npm test`: PASS, 7 Vitest suites and 90 tests.
+- `npm run typecheck`: PASS, `tsc --noEmit` exited 0.
+- `npm run build`: PASS, TypeScript check exited 0 and Vite produced `dist/assets/index-ByJK8PEq.js` and `dist/assets/index-DwVbDrWO.css`.
+- `npm run test:e2e`: PASS, 6 Playwright tests using one worker.
+- `git diff --check`: PASS, no whitespace errors; Git emitted only the existing Windows LF-to-CRLF working-copy warnings.
+
+### Constraint Check
+
+- The OpenRouter key remains server-only; no client provider or secret changes were made.
+- No raw media, provider response, filesystem path, or provider exception is returned by the upload error mapping.
+- Upload, processing, output, original-preservation, cleanup, and concurrency limits remain bounded by the existing Multer, JobStore, processor, and pipeline guards.
+- API responses remain private and uncached, and the accessible native comparison/control actions remain intact.
+- Design and plan documents were not changed.
+
+### Concerns
+
+- The upload memory budget is process-local, matching the MVP's process-local job store; a multi-process deployment would need shared admission state.
+- Full verification uses mocked OpenRouter behavior and fake E2E processing; no live provider credential was used.

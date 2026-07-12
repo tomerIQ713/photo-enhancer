@@ -13,6 +13,8 @@ const DEFAULT_MAX_QUEUED_TASKS = 200;
 const DEFAULT_TEMPORARY_STORAGE_BUDGET_BYTES = 500_000_000;
 const DEFAULT_UPLOAD_RATE_LIMIT_MAX = 10;
 const DEFAULT_UPLOAD_RATE_LIMIT_WINDOW_MS = 60_000;
+const DEFAULT_UPLOAD_MEMORY_BUDGET_BYTES = 100_000_000;
+const UPLOAD_MULTIPART_OVERHEAD_BYTES = 64 * 1024;
 
 function readPositiveInteger(name: string, fallback: number): number {
   const value = process.env[name];
@@ -77,6 +79,12 @@ export const UPLOAD_RATE_LIMIT_WINDOW_MS = readPositiveInteger(
   "UPLOAD_RATE_LIMIT_WINDOW_MS",
   DEFAULT_UPLOAD_RATE_LIMIT_WINDOW_MS
 );
+export const UPLOAD_MEMORY_BUDGET_BYTES = readPositiveInteger(
+  "UPLOAD_MEMORY_BUDGET_BYTES",
+  DEFAULT_UPLOAD_MEMORY_BUDGET_BYTES
+);
+export const MAX_UPLOAD_MEMORY_RESERVATION_BYTES =
+  MAX_FILE_BYTES * MAX_BATCH_SIZE + UPLOAD_MULTIPART_OVERHEAD_BYTES;
 
 export const config = {
   maxFileBytes: MAX_FILE_BYTES,
@@ -92,5 +100,7 @@ export const config = {
   maxQueuedTasks: MAX_QUEUED_TASKS,
   temporaryStorageBudgetBytes: TEMPORARY_STORAGE_BUDGET_BYTES,
   uploadRateLimitMax: UPLOAD_RATE_LIMIT_MAX,
-  uploadRateLimitWindowMs: UPLOAD_RATE_LIMIT_WINDOW_MS
+  uploadRateLimitWindowMs: UPLOAD_RATE_LIMIT_WINDOW_MS,
+  uploadMemoryBudgetBytes: UPLOAD_MEMORY_BUDGET_BYTES,
+  maxUploadMemoryReservationBytes: MAX_UPLOAD_MEMORY_RESERVATION_BYTES
 } as const;

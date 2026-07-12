@@ -3,12 +3,14 @@ import { randomUUID } from "node:crypto";
 import express, { type Express, type Request, type Response } from "express";
 import multer from "multer";
 import { z } from "zod";
-import { MAX_BATCH_SIZE, MAX_FILE_BYTES } from "./config";
+import { MAX_BATCH_SIZE, MAX_FILE_BYTES, MAX_PIXELS } from "./config";
 import {
   UPLOAD_RATE_LIMIT_MAX,
-  UPLOAD_RATE_LIMIT_WINDOW_MS
+  UPLOAD_RATE_LIMIT_WINDOW_MS,
+  UPLOAD_MEMORY_BUDGET_BYTES,
+  MAX_UPLOAD_MEMORY_RESERVATION_BYTES
 } from "./config";
-import { RateLimiter } from "./admission";
+import { RateLimiter, UploadMemoryBudget } from "./admission";
 import { CapacityError, JobStore } from "./jobs/job-store";
 import { JobProcessor, type PipelineLike } from "./jobs/process-job";
 import { ProcessingPipeline } from "./processing/pipeline";
@@ -37,6 +39,10 @@ const upload = multer({
     fieldSize: 16_384
   }
 });
+const processUploadMemoryBudget = new UploadMemoryBudget({
+  maxBytes: UPLOAD_MEMORY_BUDGET_BYTES,
+  reservationBytes: MAX_UPLOAD_MEMORY_RESERVATION_BYTES
+});
 
 export interface CreateAppOptions {
   store?: JobStore;
@@ -44,6 +50,7 @@ export interface CreateAppOptions {
   cleanupIntervalMs?: number;
   now?: () => number;
   rateLimiter?: RateLimiter;
+  uploadMemoryBudget?: UploadMemoryBudget;
 }
 
 export type PhotoEnhancerApp = Express & { close: () => void };
@@ -62,6 +69,37 @@ function parseControlsByTask(input: unknown): ManualControls[] | undefined {
   const parsed = JSON.parse(field);
   if (!Array.isArray(parsed)) throw new Error("Invalid per-image controls");
   return parsed.map((controls) => validateManualControls(controls));
+}
+
+function safeUploadError(error: unknown): string {
+  if (error instanceof multer.MulterError) {
+    if (error.code === "LIMIT_FILE_SIZE") {
+      return "File too large. Each photo must be 10 MB or smaller.";
+    }
+    if (
+      error.code === "LIMIT_FILE_COUNT" ||
+      error.code === "LIMIT_PART_COUNT" ||
+      error.code === "LIMIT_UNEXPECTED_FILE"
+    ) {
+      return `Choose between 1 and ${MAX_BATCH_SIZE} photos.`;
+    }
+    return "Invalid upload. Check the selected photo files and try again.";
+  }
+
+  const message = error instanceof Error ? error.message : "";
+  if (/maximum size|file exceeds/i.test(message)) {
+    return "File too large. Each photo must be 10 MB or smaller.";
+  }
+  if (/pixel/i.test(message)) {
+    return `Image exceeds the ${MAX_PIXELS.toLocaleString("en-US")} pixel limit.`;
+  }
+  if (/unsupported image|accepted formats/i.test(message)) {
+    return "Unsupported image. Accepted formats are JPEG, PNG, WebP, and AVIF.";
+  }
+  if (/batch|maximum batch|per-image controls/i.test(message)) {
+    return `Choose between 1 and ${MAX_BATCH_SIZE} photos.`;
+  }
+  return "Invalid request";
 }
 
 function taskResponse(jobId: string, task: ImageTask): Record<string, unknown> {
@@ -104,6 +142,7 @@ export function createApp(options: CreateAppOptions = {}): PhotoEnhancerApp {
     maxRequests: UPLOAD_RATE_LIMIT_MAX,
     windowMs: UPLOAD_RATE_LIMIT_WINDOW_MS
   });
+  const uploadMemoryBudget = options.uploadMemoryBudget ?? processUploadMemoryBudget;
   const app = express() as PhotoEnhancerApp;
   app.set("trust proxy", false);
   const cleanupIntervalMs = options.cleanupIntervalMs ?? 60_000;
@@ -124,9 +163,25 @@ export function createApp(options: CreateAppOptions = {}): PhotoEnhancerApp {
       response.status(503).json({ error: "Service temporarily at capacity" });
       return;
     }
+    const releaseUploadMemory = uploadMemoryBudget.tryAcquire();
+    if (!releaseUploadMemory) {
+      response.status(503).json({ error: "Service temporarily at upload capacity" });
+      return;
+    }
+    let released = false;
+    const release = () => {
+      if (released) return;
+      released = true;
+      releaseUploadMemory();
+    };
+    request.once("aborted", release);
+    request.once("error", release);
+    request.once("close", release);
+    response.once("close", release);
     upload.array("files", MAX_BATCH_SIZE)(request, response, async (error) => {
+      release();
       if (error) {
-        response.status(400).json({ error: "Invalid upload" });
+        response.status(400).json({ error: safeUploadError(error) });
         return;
       }
 
@@ -160,8 +215,8 @@ export function createApp(options: CreateAppOptions = {}): PhotoEnhancerApp {
             metadata
           });
         }
-      } catch {
-        response.status(400).json({ error: "Invalid request" });
+      } catch (error) {
+        response.status(400).json({ error: safeUploadError(error) });
         return;
       }
 

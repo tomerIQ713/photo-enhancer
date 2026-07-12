@@ -261,7 +261,7 @@ export class JobStore {
         fs.rmSync(path.join(this.rootDir, id), { recursive: true, force: true });
         this.jobs.delete(id);
         this.reservedBytes.delete(id);
-        this.expiredIds.set(id, this.now() + this.ttlMs + 1);
+        this.expiredIds.set(id, now + this.ttlMs + 1);
         while (this.expiredIds.size > this.maxExpiredIds) {
           const oldestId = this.expiredIds.keys().next().value as string | undefined;
           if (!oldestId) break;

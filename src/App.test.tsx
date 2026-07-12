@@ -6,6 +6,7 @@ import { StrictMode } from "react";
 import { App } from "./App";
 import * as api from "./api";
 import type { JobTask } from "./types";
+import { UploadDropzone } from "./components/UploadDropzone";
 
 vi.mock("./api", () => ({
   createJob: vi.fn(),
@@ -127,6 +128,20 @@ describe("Photo enhancer workbench", () => {
     expect(screen.getByText("Drop images here or press Enter to browse")).toBeVisible();
   });
 
+  it("offers Enhance another from a successful comparison and clears the session", async () => {
+    const user = userEvent.setup();
+    mockJobStatus({ status: "complete", result: { format: "png", size: 12, previewUrl: "/preview" } });
+    render(<App />);
+
+    await user.upload(screen.getByLabelText(/upload photos/i), pngFile);
+    await user.click(screen.getByRole("button", { name: /enhance photos/i }));
+    expect(await screen.findByRole("slider", { name: /before and after/i })).toBeVisible();
+
+    await user.click(screen.getByRole("button", { name: /enhance another/i }));
+    expect(screen.getByText("Drop images here or press Enter to browse")).toBeVisible();
+    expect(screen.queryByRole("slider", { name: /before and after/i })).not.toBeInTheDocument();
+  });
+
   it("offers retry for failed tasks and download for completed tasks", async () => {
     const user = userEvent.setup();
     vi.mocked(api.getJob)
@@ -225,6 +240,35 @@ describe("Photo enhancer workbench", () => {
     );
     expect(screen.getByLabelText(/download format/i)).toBeDisabled();
     expect(screen.getByLabelText(/download format/i)).toHaveValue("jpg");
+  });
+
+  it("applies a selected preset to every queued image while preserving later per-image overrides", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.upload(screen.getByLabelText(/upload photos/i), [pngFile, secondPngFile]);
+    await user.click(screen.getByRole("button", { name: /upscale/i }));
+    expect(screen.getByRole("slider", { name: /enhancement strength/i })).toHaveValue("70");
+
+    await user.click(screen.getByRole("button", { name: /landscape.png/i }));
+    expect(screen.getByRole("slider", { name: /enhancement strength/i })).toHaveValue("70");
+    fireEvent.change(screen.getByRole("slider", { name: /enhancement strength/i }), { target: { value: "91" } });
+    await user.click(screen.getByRole("button", { name: /portrait.png/i }));
+    expect(screen.getByRole("slider", { name: /enhancement strength/i })).toHaveValue("70");
+    await user.click(screen.getByRole("button", { name: /landscape.png/i }));
+    expect(screen.getByRole("slider", { name: /enhancement strength/i })).toHaveValue("91");
+  });
+
+  it("initializes newly selected files from the currently selected preset", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.upload(screen.getByLabelText(/upload photos/i), pngFile);
+    await user.click(screen.getByRole("button", { name: /upscale/i }));
+    await user.upload(screen.getByLabelText(/upload photos/i), secondPngFile);
+
+    expect(screen.getByRole("slider", { name: /enhancement strength/i })).toHaveValue("70");
+    expect(screen.getByRole("slider", { name: /noise reduction/i })).toHaveValue("35");
   });
 
   it("aborts stale submission and resets submitting state when the session changes", async () => {
@@ -415,6 +459,77 @@ describe("Photo enhancer workbench", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent("Processing failed");
     expect(screen.getByRole("button", { name: "Retry portrait.png" })).toBeVisible();
     expect(screen.getByText("Failed")).toBeVisible();
+  });
+
+  it("renders an explicit expired-result state for a polling 410 with a fresh-upload action", async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.getJob).mockRejectedValueOnce(Object.assign(new Error("Job expired"), { status: 410 }));
+    render(<App />);
+
+    await user.upload(screen.getByLabelText(/upload photos/i), pngFile);
+    await user.click(screen.getByRole("button", { name: /enhance photos/i }));
+
+    expect(await screen.findByRole("heading", { name: "Result unavailable or expired" })).toBeVisible();
+    expect(screen.getByRole("button", { name: /enhance another/i })).toBeVisible();
+    expect(screen.queryByRole("button", { name: /retry status/i })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /enhance another/i }));
+    expect(screen.getByText("Drop images here or press Enter to browse")).toBeVisible();
+  });
+
+  it("ignores stale bitmap validation and keeps current selection errors authoritative", async () => {
+    const firstFile = new File(["first"], "first.png", { type: "image/png" });
+    const secondFile = new File(["second"], "second.png", { type: "image/png" });
+    let resolveFirst: (bitmap: { width: number; height: number; close: () => void }) => void = () => undefined;
+    const firstBitmap = new Promise<{ width: number; height: number; close: () => void }>((resolve) => {
+      resolveFirst = resolve;
+    });
+    vi.stubGlobal("createImageBitmap", vi.fn((file: File) => file === firstFile
+      ? firstBitmap
+      : Promise.resolve({ width: 1, height: 1, close: vi.fn() })));
+    const onFilesSelected = vi.fn();
+    const onValidationError = vi.fn();
+    const { container } = render(
+      <UploadDropzone files={[]} onFilesSelected={onFilesSelected} onValidationError={onValidationError} />
+    );
+    const input = container.querySelector<HTMLInputElement>("input[type=file]");
+    if (!input) throw new Error("Upload input missing");
+
+    fireEvent.change(input, { target: { files: [firstFile] } });
+    fireEvent.change(input, { target: { files: [secondFile] } });
+    resolveFirst({ width: 5_001, height: 5_001, close: vi.fn() });
+
+    await waitFor(() => expect(onFilesSelected).toHaveBeenCalledWith([secondFile]));
+    expect(onFilesSelected).toHaveBeenCalledTimes(1);
+    expect(onValidationError).not.toHaveBeenCalled();
+    vi.unstubAllGlobals();
+  });
+
+  it("does not let stale bitmap validation overwrite a newer selection error", async () => {
+    const firstFile = new File(["first"], "first.png", { type: "image/png" });
+    const invalidFile = new File(["invalid"], "invalid.gif", { type: "image/gif" });
+    let resolveFirst: (bitmap: { width: number; height: number; close: () => void }) => void = () => undefined;
+    const firstBitmap = new Promise<{ width: number; height: number; close: () => void }>((resolve) => {
+      resolveFirst = resolve;
+    });
+    vi.stubGlobal("createImageBitmap", vi.fn(() => firstBitmap));
+    const onFilesSelected = vi.fn();
+    const onValidationError = vi.fn();
+    const { container } = render(
+      <UploadDropzone files={[]} onFilesSelected={onFilesSelected} onValidationError={onValidationError} />
+    );
+    const input = container.querySelector<HTMLInputElement>("input[type=file]");
+    if (!input) throw new Error("Upload input missing");
+
+    fireEvent.change(input, { target: { files: [firstFile] } });
+    fireEvent.change(input, { target: { files: [invalidFile] } });
+    resolveFirst({ width: 5_001, height: 5_001, close: vi.fn() });
+
+    await waitFor(() => expect(onValidationError).toHaveBeenCalledWith(
+      "Unsupported format. Supported formats are JPEG, PNG, WebP, and AVIF."
+    ));
+    expect(onValidationError).toHaveBeenCalledTimes(1);
+    expect(onFilesSelected).not.toHaveBeenCalled();
+    vi.unstubAllGlobals();
   });
 
   it("uses the actual preview result and immutable submitted format", async () => {

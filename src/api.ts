@@ -8,10 +8,17 @@ import type {
 
 export type { JobStatus, JobSummary } from "./types";
 
+export class ApiError extends Error {
+  constructor(public readonly status: number, message: string) {
+    super(message);
+    this.name = "ApiError";
+  }
+}
+
 async function readJson<T>(response: Response): Promise<T> {
   if (!response.ok) {
     const body = (await response.json().catch(() => null)) as { error?: string } | null;
-    throw new Error(body?.error ?? "The request could not be completed.");
+    throw new ApiError(response.status, body?.error ?? "The request could not be completed.");
   }
   return response.json() as Promise<T>;
 }
@@ -44,7 +51,7 @@ export async function createJob(
       if (xhr.status >= 200 && xhr.status < 300) {
         resolve(result as JobSummary);
       } else {
-        reject(new Error(result && "error" in result ? result.error : "The request could not be completed."));
+        reject(new ApiError(xhr.status, result && "error" in result ? result.error ?? "The request could not be completed." : "The request could not be completed."));
       }
     };
     xhr.onerror = () => reject(new Error("The request could not be completed."));

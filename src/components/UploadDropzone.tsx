@@ -1,4 +1,4 @@
-import type { ChangeEvent, DragEvent, KeyboardEvent } from "react";
+import { useEffect, useRef, type ChangeEvent, type DragEvent, type KeyboardEvent } from "react";
 
 interface UploadDropzoneProps {
   files: File[];
@@ -11,8 +11,19 @@ const MAX_FILE_BYTES = 10 * 1024 * 1024;
 const SUPPORTED_TYPES = new Set(["image/jpeg", "image/png", "image/webp", "image/avif"]);
 
 export function UploadDropzone({ files, onFilesSelected, onValidationError }: UploadDropzoneProps) {
+  const validationGeneration = useRef(0);
+  const validationAbort = useRef<AbortController | undefined>(undefined);
+
+  useEffect(() => () => validationAbort.current?.abort(), []);
+
   const handleFiles = async (fileList: FileList | null) => {
     if (!fileList) return;
+    validationAbort.current?.abort();
+    const controller = new AbortController();
+    validationAbort.current = controller;
+    const generation = validationGeneration.current + 1;
+    validationGeneration.current = generation;
+    const isCurrent = () => !controller.signal.aborted && validationGeneration.current === generation;
     const nextFiles = Array.from(fileList);
     if (nextFiles.length === 0 || nextFiles.length > MAX_FILES) {
       onValidationError("Choose between 1 and 5 photos.");
@@ -32,17 +43,24 @@ export function UploadDropzone({ files, onFilesSelected, onValidationError }: Up
       for (const file of nextFiles) {
         try {
           const bitmap = await createImageBitmap(file);
+          if (!isCurrent()) {
+            bitmap.close();
+            return;
+          }
           const pixels = bitmap.width * bitmap.height;
           bitmap.close();
+          if (!isCurrent()) return;
           if (pixels > 25_000_000) {
             onValidationError("Image exceeds the 25 million pixel limit.");
             return;
           }
         } catch {
+          if (!isCurrent()) return;
           // The server remains the source of truth for image decoding.
         }
       }
     }
+    if (!isCurrent()) return;
     onFilesSelected(nextFiles);
   };
   const handleChange = (event: ChangeEvent<HTMLInputElement>) => void handleFiles(event.target.files);

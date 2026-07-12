@@ -49,7 +49,7 @@ test("shows an error for an invalid image upload", async ({ page }) => {
   });
   await page.getByRole("button", { name: /enhance photos/i }).click();
 
-  await expect(page.getByRole("alert")).toHaveText(/invalid request/i);
+  await expect(page.getByRole("alert")).toHaveText(/unsupported image|accepted formats/i);
 });
 
 test("retries a failed task and shows its completed result", async ({ page }) => {

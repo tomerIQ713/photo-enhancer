@@ -37,6 +37,7 @@ export function App() {
   const [error, setError] = useState<string>();
   const [pollingError, setPollingError] = useState<string>();
   const [canRetryStatus, setCanRetryStatus] = useState(false);
+  const [resultUnavailable, setResultUnavailable] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<number>();
   const [pollVersion, setPollVersion] = useState(0);
   const sessionGeneration = useRef(0);
@@ -76,6 +77,7 @@ export function App() {
         const status = await getJob(jobId, controller.signal);
         if (controller.signal.aborted || disposed || sessionGeneration.current !== generation) return;
         setTasks(status.tasks);
+        setResultUnavailable(false);
         setSelectedTaskId((current) => current ?? status.tasks[0]?.taskId);
         setSelectedIndex((current) => Math.min(current, Math.max(0, status.tasks.length - 1)));
         setPollingError(undefined);
@@ -84,6 +86,15 @@ export function App() {
         schedulePoll(1000, 0);
       } catch (pollError) {
         if (controller.signal.aborted || disposed || sessionGeneration.current !== generation) return;
+        if (
+          pollError instanceof Error &&
+          (pollError as Error & { status?: number }).status === 410
+        ) {
+          setResultUnavailable(true);
+          setPollingError(undefined);
+          setCanRetryStatus(false);
+          return;
+        }
         if (attempt < 3) {
           setPollingError("Status refresh failed. Retrying shortly...");
           schedulePoll(Math.min(100 * 2 ** attempt, 800), attempt + 1);
@@ -110,8 +121,9 @@ export function App() {
     retryController.current = undefined;
     setIsSubmitting(false);
     setFiles(nextFiles);
-    setControlsByFile(nextFiles.map(() => ({ ...DEFAULT_CONTROLS })));
-    setControls({ ...DEFAULT_CONTROLS });
+    const nextPresetControls = { ...PRESET_DEFAULTS[preset] };
+    setControlsByFile(nextFiles.map(() => ({ ...nextPresetControls })));
+    setControls(nextPresetControls);
     setTasks([]);
     setJobId(undefined);
     setSubmittedFormat(undefined);
@@ -120,6 +132,7 @@ export function App() {
     setError(undefined);
     setPollingError(undefined);
     setCanRetryStatus(false);
+    setResultUnavailable(false);
     setUploadProgress(undefined);
   };
 
@@ -144,7 +157,7 @@ export function App() {
     setPreset(nextPreset);
     const nextControls = { ...PRESET_DEFAULTS[nextPreset] };
     setControls(nextControls);
-    setControlsByFile((current) => current.map((item, index) => index === selectedIndex ? nextControls : item));
+    setControlsByFile((current) => current.map(() => ({ ...nextControls })));
   };
 
   const handleSubmit = async () => {
@@ -168,6 +181,7 @@ export function App() {
     setError(undefined);
     setPollingError(undefined);
     setCanRetryStatus(false);
+    setResultUnavailable(false);
     setIsSubmitting(true);
     setUploadProgress(0);
     const controller = new AbortController();
@@ -273,7 +287,7 @@ export function App() {
         )}
         <div className="workbench-grid">
           <FileQueue files={files} tasks={tasks} selectedIndex={selectedIndex} onSelect={handleSelect} onRetry={handleRetry} pendingRetryTaskId={pendingRetryTaskId} />
-          <ImagePreview sourceFile={selectedFile} previewUrl={selectedOutputUrl} taskStatus={selectedTask?.status} taskError={selectedTask?.error} onEnhanceAnother={() => handleFilesSelected([])} />
+          <ImagePreview sourceFile={selectedFile} previewUrl={selectedOutputUrl} taskStatus={selectedTask?.status} taskError={selectedTask?.error} resultUnavailable={resultUnavailable} onEnhanceAnother={() => handleFilesSelected([])} />
           <div className="controls-column">
             <PresetControls preset={preset} controls={selectedControls} outputFormat={formatForSession} formatDisabled={Boolean(submittedFormat)} disabled={isSubmitting} onPresetChange={handlePresetChange} onControlsChange={handleControlsChange} onOutputFormatChange={setOutputFormat} onReset={resetControls} onSubmit={handleSubmit} />
             <DownloadActions jobId={jobId} taskId={selectedTask?.taskId} format={formatForSession} href={downloadHref} batch={batchDownloads} />
