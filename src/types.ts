@@ -1,4 +1,5 @@
 export type Preset = "auto" | "upscale";
+export type UpscaleMode = "ai" | "classic";
 export type OutputFormat = "jpg" | "png";
 
 export interface ManualControls {

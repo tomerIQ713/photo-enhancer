@@ -1,4 +1,4 @@
-import type { ManualControls, OutputFormat, Preset } from "../types";
+import type { ManualControls, OutputFormat, Preset, UpscaleMode } from "../types";
 import { LocalImageProvider } from "./local-image-provider";
 import { mergeManualControls, OpenRouterProvider } from "./openrouter-provider";
 
@@ -12,8 +12,16 @@ export class ProcessingPipeline {
     input: Buffer,
     preset: Preset,
     controls: ManualControls,
-    outputFormat: OutputFormat
+    outputFormat: OutputFormat,
+    upscaleMode: UpscaleMode = "classic"
   ): Promise<Buffer> {
+    if (preset === "upscale" && upscaleMode === "ai") {
+      const aiResult = await this.openRouterProvider.enhanceImage(input, controls);
+      if (aiResult) {
+        return this.localImageProvider.normalize(aiResult, outputFormat);
+      }
+    }
+
     const parameters = await this.openRouterProvider.analyze(
       input,
       preset,

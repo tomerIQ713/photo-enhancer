@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
+import type { UpscaleMode } from "../types";
 import {
   MAX_OUTPUT_BYTES,
   MAX_OUTPUT_PIXELS,
@@ -14,7 +15,8 @@ export interface PipelineLike {
     input: Buffer,
     preset: Parameters<ProcessingPipeline["process"]>[1],
     controls: Parameters<ProcessingPipeline["process"]>[2],
-    outputFormat: Parameters<ProcessingPipeline["process"]>[3]
+    outputFormat: Parameters<ProcessingPipeline["process"]>[3],
+    upscaleMode: UpscaleMode
   ): Promise<Buffer>;
 }
 
@@ -83,7 +85,8 @@ async function processTask(
       input,
       job.preset,
       task.controls ?? job.controls,
-      task.outputFormat ?? "png"
+      task.outputFormat ?? "png",
+      job.upscaleMode
     );
     if (!Buffer.isBuffer(output) || output.length > maxOutputBytes) {
       throw new Error("Output byte limit exceeded");

@@ -52,4 +52,12 @@ export class LocalImageProvider {
       ? image.jpeg({ quality: 90 }).toBuffer()
       : image.png().toBuffer();
   }
+
+  async normalize(input: Buffer, outputFormat: OutputFormat): Promise<Buffer> {
+    const source = Buffer.from(input);
+    const image = sharp(source).rotate();
+    return outputFormat === "jpg"
+      ? image.jpeg({ quality: 90 }).toBuffer()
+      : image.png().toBuffer();
+  }
 }

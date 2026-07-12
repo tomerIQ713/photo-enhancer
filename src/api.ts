@@ -4,7 +4,8 @@ import type {
   ManualControls,
   OutputFormat,
   Preset,
-  UploadConfig
+  UploadConfig,
+  UpscaleMode
 } from "./types";
 
 export type { JobStatus, JobSummary } from "./types";
@@ -42,7 +43,8 @@ export async function createJob(
   outputFormat: OutputFormat,
   signal?: AbortSignal,
   controlsByTask?: ManualControls[],
-  onProgress?: (percentage: number) => void
+  onProgress?: (percentage: number) => void,
+  upscaleMode?: UpscaleMode
 ): Promise<JobSummary> {
   const body = new FormData();
   files.forEach((file) => body.append("files", file));
@@ -50,6 +52,7 @@ export async function createJob(
   body.append("controls", JSON.stringify(controls));
   body.append("outputFormat", outputFormat);
   if (controlsByTask) body.append("controlsByTask", JSON.stringify(controlsByTask));
+  if (upscaleMode) body.append("upscaleMode", upscaleMode);
 
   return new Promise<JobSummary>((resolve, reject) => {
     const xhr = new XMLHttpRequest();

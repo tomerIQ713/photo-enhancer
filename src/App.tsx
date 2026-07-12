@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createJob, downloadResult, getDownloadUrl, getJob, getUploadConfig, retryTask } from "./api";
-import type { JobTask, ManualControls, OutputFormat, Preset, UploadConfig } from "./types";
+import type { JobTask, ManualControls, OutputFormat, Preset, UploadConfig, UpscaleMode } from "./types";
 import { DownloadActions } from "./components/DownloadActions";
 import { FileQueue } from "./components/FileQueue";
 import { ImagePreview } from "./components/ImagePreview";
@@ -31,6 +31,7 @@ const DEFAULT_UPLOAD_CONFIG: UploadConfig = {
 export function App() {
   const [files, setFiles] = useState<File[]>([]);
   const [preset, setPreset] = useState<Preset>("auto");
+  const [upscaleMode, setUpscaleMode] = useState<UpscaleMode>("ai");
   const [controls, setControls] = useState<ManualControls>(DEFAULT_CONTROLS);
   const [controlsByFile, setControlsByFile] = useState<ManualControls[]>([]);
   const [outputFormat, setOutputFormat] = useState<OutputFormat>("png");
@@ -211,7 +212,8 @@ export function App() {
         format,
         controller.signal,
         controlsByFile,
-        setUploadProgress
+        setUploadProgress,
+        preset === "upscale" ? upscaleMode : undefined
       );
       if (controller.signal.aborted || sessionGeneration.current !== generation) return;
       setJobId(summary.jobId);
@@ -342,7 +344,7 @@ export function App() {
           <FileQueue files={files} tasks={tasks} selectedIndex={selectedIndex} onSelect={handleSelect} onRetry={handleRetry} pendingRetryTaskId={pendingRetryTaskId} />
           <ImagePreview sourceFile={selectedFile} previewUrl={selectedOutputUrl} taskStatus={selectedTask?.status} taskError={selectedTask?.error} resultUnavailable={resultUnavailable} onResultUnavailable={handleResultUnavailable} onEnhanceAnother={() => handleFilesSelected([])} />
           <div className="controls-column">
-            <PresetControls preset={preset} controls={selectedControls} outputFormat={formatForSession} formatDisabled={Boolean(submittedFormat)} disabled={isSubmitting} onPresetChange={handlePresetChange} onControlsChange={handleControlsChange} onOutputFormatChange={setOutputFormat} onReset={resetControls} onSubmit={handleSubmit} />
+            <PresetControls preset={preset} controls={selectedControls} outputFormat={formatForSession} upscaleMode={upscaleMode} formatDisabled={Boolean(submittedFormat)} disabled={isSubmitting} onPresetChange={handlePresetChange} onControlsChange={handleControlsChange} onOutputFormatChange={setOutputFormat} onUpscaleModeChange={setUpscaleMode} onReset={resetControls} onSubmit={handleSubmit} />
             <DownloadActions jobId={jobId} taskId={selectedTask?.taskId} format={formatForSession} href={downloadHref} batch={batchDownloads} onDownload={selectedTask?.taskId ? () => handleDownload(selectedTask.taskId, formatForSession) : undefined} onDownloadAll={handleDownloadAll} />
           </div>
         </div>

@@ -1,14 +1,16 @@
-import type { ManualControls, OutputFormat, Preset } from "../types";
+import type { ManualControls, OutputFormat, Preset, UpscaleMode } from "../types";
 
 interface PresetControlsProps {
   preset: Preset;
   controls: ManualControls;
   outputFormat: OutputFormat;
+  upscaleMode: UpscaleMode;
   disabled?: boolean;
   formatDisabled?: boolean;
   onPresetChange: (preset: Preset) => void;
   onControlsChange: (controls: ManualControls) => void;
   onOutputFormatChange: (format: OutputFormat) => void;
+  onUpscaleModeChange: (mode: UpscaleMode) => void;
   onReset: () => void;
   onSubmit: () => void;
 }
@@ -25,11 +27,13 @@ export function PresetControls({
   preset,
   controls,
   outputFormat,
+  upscaleMode,
   disabled = false,
   formatDisabled = false,
   onPresetChange,
   onControlsChange,
   onOutputFormatChange,
+  onUpscaleModeChange,
   onReset,
   onSubmit
 }: PresetControlsProps) {
@@ -49,6 +53,26 @@ export function PresetControls({
           <strong>Upscale</strong><span>Bring out detail in smaller images</span>
         </button>
       </div>
+      {preset === "upscale" && (
+        <div className="upscale-mode-group" role="group" aria-label="Upscale method">
+          <button
+            type="button"
+            className={upscaleMode === "ai" ? "mode-button is-active" : "mode-button"}
+            onClick={() => onUpscaleModeChange("ai")}
+            disabled={disabled}
+          >
+            <strong>AI Upscale</strong><span>Generates new detail using AI image-to-image</span>
+          </button>
+          <button
+            type="button"
+            className={upscaleMode === "classic" ? "mode-button is-active" : "mode-button"}
+            onClick={() => onUpscaleModeChange("classic")}
+            disabled={disabled}
+          >
+            <strong>Classic Upscale</strong><span>Lanczos3 interpolation, no AI</span>
+          </button>
+        </div>
+      )}
       <div className="control-list">
         {fields.map(([name, label]) => (
           <label className="range-field" key={name}>

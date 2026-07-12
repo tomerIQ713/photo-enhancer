@@ -1,9 +1,10 @@
 import sharp from "sharp";
 import { z } from "zod";
-import { OPENROUTER_MODEL, OPENROUTER_TIMEOUT_MS } from "../config";
+import { OPENROUTER_IMAGE_MODEL, OPENROUTER_MODEL, OPENROUTER_TIMEOUT_MS } from "../config";
 import type {
   EnhancementParameters,
   ManualControls,
+  OutputFormat,
   Preset
 } from "../types";
 
@@ -26,6 +27,7 @@ export interface OpenRouterProviderOptions {
   timeoutMs?: number;
   apiKey?: string;
   model?: string;
+  imageModel?: string;
   retryDelayMs?: number;
 }
 
@@ -60,6 +62,17 @@ export function mergeManualControls(
   };
 }
 
+const imageResponseSchema = z.object({
+  data: z
+    .array(
+      z.object({
+        b64_json: z.string().min(1),
+        media_type: z.string().optional()
+      })
+    )
+    .min(1)
+});
+
 export function presetDefaults(preset: Preset): EnhancementParameters {
   if (preset === "upscale") {
     return {
@@ -85,6 +98,7 @@ export class OpenRouterProvider {
   private readonly timeoutMs: number;
   private readonly apiKey: string;
   private readonly model: string;
+  private readonly imageModel: string;
   private readonly retryDelayMs: number;
 
   constructor(options: OpenRouterProviderOptions = {}) {
@@ -92,6 +106,7 @@ export class OpenRouterProvider {
     this.timeoutMs = options.timeoutMs ?? OPENROUTER_TIMEOUT_MS;
     this.apiKey = options.apiKey ?? process.env.OPENROUTER_API_KEY ?? "";
     this.model = options.model ?? OPENROUTER_MODEL;
+    this.imageModel = options.imageModel ?? OPENROUTER_IMAGE_MODEL;
     this.retryDelayMs = options.retryDelayMs ?? 200;
   }
 
@@ -190,6 +205,94 @@ export class OpenRouterProvider {
         resolve();
       }, { once: true });
     });
+  }
+
+  async enhanceImage(
+    input: Buffer,
+    controls: ManualControls
+  ): Promise<Buffer | null> {
+    if (process.env.E2E_FAKE_PROCESSING === "true") {
+      return null;
+    }
+
+    if (!this.apiKey) {
+      return null;
+    }
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
+
+    try {
+      const image = await sharp(input).png().toBuffer();
+      const dataUrl = `data:image/png;base64,${image.toString("base64")}`;
+      const strengthPercent = Math.round(clamp(controls.strength, 0, 100));
+
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        let response: Response;
+        try {
+          response = await this.fetchImpl(
+            "https://openrouter.ai/api/v1/images",
+            {
+              method: "POST",
+              headers: {
+                Authorization: `Bearer ${this.apiKey}`,
+                "Content-Type": "application/json"
+              },
+              body: JSON.stringify({
+                model: this.imageModel,
+                prompt: [
+                  `Upscale this image to higher resolution.`,
+                  `Enhancement strength: ${strengthPercent}%.`,
+                  `Preserve identity, composition, colors, and all original content.`,
+                  `Do not add, remove, or invent elements.`,
+                  `Do not change the aspect ratio.`,
+                  `Maintain faithful detail reconstruction.`
+                ].join(" "),
+                input_references: [
+                  {
+                    type: "image_url",
+                    image_url: { url: dataUrl }
+                  }
+                ],
+                output_format: "png"
+              }),
+              signal: controller.signal
+            }
+          );
+        } catch {
+          if (controller.signal.aborted || attempt === 2) return null;
+          await this.waitBeforeRetry(attempt, controller);
+          continue;
+        }
+
+        if (!response.ok) {
+          if (![429, 500, 502, 503, 504].includes(response.status) || attempt === 2) {
+            return null;
+          }
+          await this.waitBeforeRetry(attempt, controller);
+          continue;
+        }
+
+        const parsedResponse = imageResponseSchema.safeParse(await response.json());
+        if (!parsedResponse.success) return null;
+
+        try {
+          const imageBuffer = Buffer.from(
+            parsedResponse.data.data[0].b64_json,
+            "base64"
+          );
+          if (imageBuffer.length === 0) return null;
+          return imageBuffer;
+        } catch {
+          return null;
+        }
+      }
+      return null;
+    } catch {
+      return null;
+    } finally {
+      clearTimeout(timeout);
+    }
   }
 
   private instruction(preset: Preset, controls: ManualControls): string {

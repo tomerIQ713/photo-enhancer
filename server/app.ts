@@ -19,7 +19,7 @@ import {
   validateManualControls,
   validateUpload
 } from "./validation";
-import type { ImageTask, ManualControls, OutputFormat, Preset } from "./types";
+import type { ImageTask, ManualControls, OutputFormat, Preset, UpscaleMode } from "./types";
 
 const DEFAULT_CONTROLS: ManualControls = {
   strength: 50,
@@ -31,6 +31,7 @@ const DEFAULT_CONTROLS: ManualControls = {
 
 const presetSchema = z.enum(["auto", "upscale"]);
 const outputFormatSchema = z.enum(["jpg", "png"]);
+const upscaleModeSchema = z.enum(["ai", "classic"]);
 const controlsFieldSchema = z.string().optional();
 const controlsByTaskFieldSchema = z.string().optional();
 const upload = multer({
@@ -38,8 +39,8 @@ const upload = multer({
   limits: {
     fileSize: MAX_FILE_BYTES,
     files: MAX_BATCH_SIZE,
-    fields: 4,
-    parts: MAX_BATCH_SIZE + 4,
+    fields: 5,
+    parts: MAX_BATCH_SIZE + 5,
     fieldSize: 16_384
   }
 });
@@ -211,6 +212,7 @@ export function createApp(options: CreateAppOptions = {}): PhotoEnhancerApp {
         let controls: ManualControls;
         let outputFormat: OutputFormat;
         let controlsByTask: ManualControls[] | undefined;
+        let upscaleMode: UpscaleMode;
         let acceptedFiles: Array<{
           id: string;
           buffer: Buffer;
@@ -228,6 +230,9 @@ export function createApp(options: CreateAppOptions = {}): PhotoEnhancerApp {
           outputFormat = outputFormatSchema.parse(
             request.body?.outputFormat ?? "png"
           ) as OutputFormat;
+          upscaleMode = (upscaleModeSchema.parse(
+            request.body?.upscaleMode ?? "classic"
+          ) as UpscaleMode) ?? "classic";
           acceptedFiles = [];
           for (const file of files) {
             const metadata = await validateUploadForRequest(file);
@@ -249,7 +254,8 @@ export function createApp(options: CreateAppOptions = {}): PhotoEnhancerApp {
             preset,
             controls,
             outputFormat,
-            controlsByTask
+            controlsByTask,
+            upscaleMode
           );
         } catch (error) {
           if (error instanceof CapacityError) {

@@ -48,14 +48,30 @@ async function createOrientedJpeg(): Promise<Buffer> {
     .toBuffer();
 }
 
+async function createLargerPng(): Promise<Buffer> {
+  return sharp({
+    create: {
+      width: 16,
+      height: 12,
+      channels: 3,
+      background: { r: 60, g: 120, b: 200 }
+    }
+  })
+    .png()
+    .toBuffer();
+}
+
 describe("ProcessingPipeline", () => {
   let fetchMock: ReturnType<typeof vi.fn>;
   let requestBody: Record<string, unknown> | undefined;
+  let requestUrl: string | undefined;
   let pipeline: ProcessingPipeline;
 
   beforeEach(() => {
     process.env.OPENROUTER_API_KEY = "test-key";
-    fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+    requestUrl = undefined;
+    fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      requestUrl = String(input);
       requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
       return new Response(
         JSON.stringify({
@@ -333,5 +349,128 @@ describe("ProcessingPipeline", () => {
 
     expect(metadata.width).toBe(32);
     expect(metadata.height).toBe(24);
+  });
+
+  it("uses AI image-to-image when upscaleMode is ai and returns a valid buffer", async () => {
+    const aiOutput = await createLargerPng();
+    fetchMock.mockImplementationOnce(async (input: RequestInfo | URL) => {
+      requestUrl = String(input);
+      return new Response(
+        JSON.stringify({
+          data: [{ b64_json: aiOutput.toString("base64"), media_type: "image/png" }]
+        }),
+        { status: 200 }
+      );
+    });
+
+    const output = await pipeline.process(
+      await createSamplePng(),
+      "upscale",
+      defaultControls,
+      "png",
+      "ai"
+    );
+
+    expect(requestUrl).toBe("https://openrouter.ai/api/v1/images");
+    expect(Buffer.isBuffer(output)).toBe(true);
+    const metadata = await sharp(output).metadata();
+    expect(metadata.format).toBe("png");
+    expect(metadata.width).toBe(16);
+  });
+
+  it("sends input_references with the image and faithful instructions in AI mode", async () => {
+    const aiOutput = await createLargerPng();
+    fetchMock.mockImplementationOnce(async (input: RequestInfo | URL, init?: RequestInit) => {
+      requestUrl = String(input);
+      requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      return new Response(
+        JSON.stringify({
+          data: [{ b64_json: aiOutput.toString("base64"), media_type: "image/png" }]
+        }),
+        { status: 200 }
+      );
+    });
+
+    await pipeline.process(
+      await createSamplePng(),
+      "upscale",
+      defaultControls,
+      "png",
+      "ai"
+    );
+
+    expect(requestBody).toMatchObject({
+      model: "google/gemini-2.5-flash-image",
+      input_references: [
+        {
+          type: "image_url",
+          image_url: { url: expect.stringContaining("data:image/png;base64,") }
+        }
+      ],
+      output_format: "png"
+    });
+    expect(requestBody?.prompt).toContain("Preserve identity");
+    expect(JSON.stringify(requestBody)).not.toContain("test-key");
+  });
+
+  it("falls back to analyze+Sharp when AI upscale returns no image", async () => {
+    fetchMock.mockResolvedValueOnce(new Response(
+      JSON.stringify({ data: [] }),
+      { status: 200 }
+    ));
+
+    const output = await pipeline.process(
+      await createSamplePng(),
+      "upscale",
+      defaultControls,
+      "png",
+      "ai"
+    );
+
+    expect(Buffer.isBuffer(output)).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(requestUrl).toBe("https://openrouter.ai/api/v1/chat/completions");
+  });
+
+  it("falls back to analyze+Sharp when AI upscale returns non-2xx", async () => {
+    fetchMock
+      .mockResolvedValueOnce(new Response("error", { status: 503 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        choices: [{ message: { content: JSON.stringify(validParameters) } }]
+      }), { status: 200 }));
+
+    const output = await pipeline.process(
+      await createSamplePng(),
+      "upscale",
+      defaultControls,
+      "png",
+      "ai"
+    );
+
+    expect(Buffer.isBuffer(output)).toBe(true);
+  });
+
+  it("does not call the Image API when upscaleMode is classic", async () => {
+    await pipeline.process(
+      await createSamplePng(),
+      "upscale",
+      defaultControls,
+      "png",
+      "classic"
+    );
+
+    expect(requestUrl).toBe("https://openrouter.ai/api/v1/chat/completions");
+  });
+
+  it("does not call the Image API for auto preset even with ai mode", async () => {
+    await pipeline.process(
+      await createSamplePng(),
+      "auto",
+      defaultControls,
+      "png",
+      "ai"
+    );
+
+    expect(requestUrl).toBe("https://openrouter.ai/api/v1/chat/completions");
   });
 });

@@ -1,4 +1,5 @@
 export type Preset = "auto" | "upscale";
+export type UpscaleMode = "ai" | "classic";
 
 export interface ManualControls {
   strength: number;
@@ -56,6 +57,7 @@ export interface Job {
   id: string;
   preset: Preset;
   controls: ManualControls;
+  upscaleMode: UpscaleMode;
   tasks: ImageTask[];
   createdAt: number;
   expiresAt: number;

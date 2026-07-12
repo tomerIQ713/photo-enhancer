@@ -16,7 +16,8 @@ import type {
   OutputFormat,
   Preset,
   StoredUpload,
-  TaskUpdate
+  TaskUpdate,
+  UpscaleMode
 } from "../types";
 
 export interface StoredBufferUpload {
@@ -95,14 +96,15 @@ export class JobStore {
     preset: Preset,
     controls: ManualControls,
     outputFormat: OutputFormat = "png",
-    controlsByTask?: ManualControls[]
+    controlsByTask?: ManualControls[],
+    upscaleMode: UpscaleMode = "classic"
   ): Job {
     const buffers = files.map((file) => ({
       id: file.id,
       buffer: fs.readFileSync(file.originalPath),
       metadata: file.metadata
     }));
-    return this.createFromBuffers(buffers, preset, controls, outputFormat, controlsByTask);
+    return this.createFromBuffers(buffers, preset, controls, outputFormat, controlsByTask, upscaleMode);
   }
 
   createFromBuffers(
@@ -110,7 +112,8 @@ export class JobStore {
     preset: Preset,
     controls: ManualControls,
     outputFormat: OutputFormat = "png",
-    controlsByTask?: ManualControls[]
+    controlsByTask?: ManualControls[],
+    upscaleMode: UpscaleMode = "classic"
   ): Job {
     const reservedBytes = files.reduce(
       (total, file) => total + file.buffer.length + this.maxOutputBytes,
@@ -143,6 +146,7 @@ export class JobStore {
       id,
       preset,
       controls: { ...controls },
+      upscaleMode,
       tasks,
       createdAt,
       expiresAt: createdAt + this.ttlMs

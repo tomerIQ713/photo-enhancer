@@ -8,6 +8,7 @@ const MAX_PROCESSING_CONCURRENCY = 2;
 const DEFAULT_JOB_TTL_MS = 3_600_000;
 const DEFAULT_OPENROUTER_TIMEOUT_MS = 60_000;
 const DEFAULT_OPENROUTER_MODEL = "google/gemini-2.5-flash";
+const DEFAULT_OPENROUTER_IMAGE_MODEL = "google/gemini-2.5-flash-image";
 const DEFAULT_MAX_TRACKED_JOBS = 100;
 const DEFAULT_MAX_QUEUED_TASKS = 200;
 const DEFAULT_TEMPORARY_STORAGE_BUDGET_BYTES = 500_000_000;
@@ -59,6 +60,8 @@ export const OPENROUTER_TIMEOUT_MS = readPositiveInteger(
 );
 export const OPENROUTER_MODEL =
   process.env.OPENROUTER_MODEL || DEFAULT_OPENROUTER_MODEL;
+export const OPENROUTER_IMAGE_MODEL =
+  process.env.OPENROUTER_IMAGE_MODEL || DEFAULT_OPENROUTER_IMAGE_MODEL;
 export const MAX_TRACKED_JOBS = readPositiveInteger(
   "MAX_TRACKED_JOBS",
   DEFAULT_MAX_TRACKED_JOBS
@@ -96,6 +99,7 @@ export const config = {
   jobTtlMs: JOB_TTL_MS,
   openRouterTimeoutMs: OPENROUTER_TIMEOUT_MS,
   openRouterModel: OPENROUTER_MODEL,
+  openRouterImageModel: OPENROUTER_IMAGE_MODEL,
   maxTrackedJobs: MAX_TRACKED_JOBS,
   maxQueuedTasks: MAX_QUEUED_TASKS,
   temporaryStorageBudgetBytes: TEMPORARY_STORAGE_BUDGET_BYTES,

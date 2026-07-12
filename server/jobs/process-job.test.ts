@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { MAX_OUTPUT_PIXELS } from "../config";
 import { JobStore } from "./job-store";
 import { JobProcessor, type PipelineLike } from "./process-job";
-import type { ManualControls, OutputFormat, Preset } from "../types";
+import type { ManualControls, OutputFormat, Preset, UpscaleMode } from "../types";
 
 const controls: ManualControls = {
   strength: 50,
@@ -31,7 +31,8 @@ class DelayedPipeline implements PipelineLike {
     input: Buffer,
     _preset: Preset,
     _controls: ManualControls,
-    _outputFormat: OutputFormat
+    _outputFormat: OutputFormat,
+    _upscaleMode: UpscaleMode
   ): Promise<Buffer> {
     this.calls += 1;
     this.active += 1;
