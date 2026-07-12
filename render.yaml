@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: photo-enhancer
+    env: node
+    buildCommand: npm ci && npm run build
+    startCommand: node --import tsx server/index.ts
+    envVars:
+      - key: NODE_VERSION
+        value: 22

@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import path from "node:path";
 import { randomUUID } from "node:crypto";
 import express, { type Express, type Request, type Response } from "express";
 import multer from "multer";
@@ -454,6 +455,15 @@ export function createApp(options: CreateAppOptions = {}): PhotoEnhancerApp {
   });
 
   app.close = () => clearInterval(cleanupTimer);
+
+  const publicDir = path.resolve(process.cwd(), "dist");
+  if (fs.existsSync(publicDir)) {
+    app.use(express.static(publicDir));
+    app.use((_request, response) => {
+      response.sendFile(path.join(publicDir, "index.html"));
+    });
+  }
+
   return app;
 }
 
