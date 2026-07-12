@@ -6,7 +6,7 @@ interface FileQueueProps {
   tasks: JobTask[];
   selectedIndex: number;
   onSelect: (index: number) => void;
-  onRetry: (taskId: string) => void;
+  onRetry?: (taskId: string) => void;
   pendingRetryTaskId?: string;
 }
 
@@ -54,7 +54,7 @@ export function FileQueue({ files, tasks, selectedIndex, onSelect, onRetry, pend
                     {task.status === "failed" && task.error ? `: ${task.error}` : ""}
                   </span>}
                 </button>
-                {task?.status === "failed" && (
+                {task?.status === "failed" && onRetry && (
                     <button
                       className="text-button retry-button"
                       type="button"

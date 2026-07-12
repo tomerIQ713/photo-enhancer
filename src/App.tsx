@@ -1,20 +1,36 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { createJob, downloadResult, getDownloadUrl, getJob, getUploadConfig, retryTask } from "./api";
-import type { JobTask, ManualControls, OutputFormat, Preset, UploadConfig, UpscaleMode } from "./types";
+import type { OutputFormat, Preset, UpscaleMode } from "./openrouter";
+import { CanvasProcessor } from "./canvas-processor";
 import { DownloadActions } from "./components/DownloadActions";
 import { FileQueue } from "./components/FileQueue";
 import { ImagePreview } from "./components/ImagePreview";
 import { PresetControls } from "./components/PresetControls";
 import { SettingsModal, getStoredApiKey } from "./components/SettingsModal";
 import { UploadDropzone } from "./components/UploadDropzone";
+import { mergeControls, OpenRouterClient, presetDefaults } from "./openrouter";
 import "./styles.css";
 
+interface ManualControls {
+  strength: number;
+  sharpness: number;
+  noiseReduction: number;
+  brightness: number;
+  contrast: number;
+}
+
+interface ProcessedImage {
+  id: string;
+  file: File;
+  status: "idle" | "analyzing" | "processing" | "complete" | "failed";
+  originalObjectUrl: string;
+  enhancedObjectUrl?: string;
+  enhancedBlob?: Blob;
+  outputFormat: OutputFormat;
+  error?: string;
+}
+
 const DEFAULT_CONTROLS: ManualControls = {
-  strength: 50,
-  sharpness: 50,
-  noiseReduction: 50,
-  brightness: 50,
-  contrast: 50
+  strength: 50, sharpness: 50, noiseReduction: 50, brightness: 50, contrast: 50
 };
 
 const PRESET_DEFAULTS: Record<Preset, ManualControls> = {
@@ -22,313 +38,160 @@ const PRESET_DEFAULTS: Record<Preset, ManualControls> = {
   upscale: { strength: 70, sharpness: 70, noiseReduction: 35, brightness: 50, contrast: 55 }
 };
 
-const DEFAULT_UPLOAD_CONFIG: UploadConfig = {
-  maxFileBytes: 10 * 1024 * 1024,
-  maxPixels: 25_000_000,
-  maxBatchSize: 5,
-  supportedMimeTypes: ["image/jpeg", "image/png", "image/webp", "image/avif"]
-};
+let nextId = 0;
+
+const openRouter = new OpenRouterClient();
+const processor = new CanvasProcessor();
 
 export function App() {
   const [files, setFiles] = useState<File[]>([]);
   const [preset, setPreset] = useState<Preset>("auto");
   const [upscaleMode, setUpscaleMode] = useState<UpscaleMode>("ai");
   const [controls, setControls] = useState<ManualControls>(DEFAULT_CONTROLS);
-  const [controlsByFile, setControlsByFile] = useState<ManualControls[]>([]);
+  const [controlsByIndex, setControlsByIndex] = useState<ManualControls[]>([]);
   const [outputFormat, setOutputFormat] = useState<OutputFormat>("png");
-  const [submittedFormat, setSubmittedFormat] = useState<OutputFormat>();
-  const [jobId, setJobId] = useState<string>();
-  const [tasks, setTasks] = useState<JobTask[]>([]);
-  const [selectedTaskId, setSelectedTaskId] = useState<string>();
   const [selectedIndex, setSelectedIndex] = useState(0);
-  const [isSubmitting, setIsSubmitting] = useState(false);
-  const [pendingRetryTaskId, setPendingRetryTaskId] = useState<string>();
+  const [processed, setProcessed] = useState<ProcessedImage[]>([]);
+  const [isProcessing, setIsProcessing] = useState(false);
   const [error, setError] = useState<string>();
-  const [pollingError, setPollingError] = useState<string>();
-  const [canRetryStatus, setCanRetryStatus] = useState(false);
-  const [resultUnavailable, setResultUnavailable] = useState(false);
-  const [uploadProgress, setUploadProgress] = useState<number>();
-  const [uploadConfig, setUploadConfig] = useState<UploadConfig>(DEFAULT_UPLOAD_CONFIG);
-  const [pollVersion, setPollVersion] = useState(0);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [apiKey, setApiKey] = useState(() => getStoredApiKey());
-  const sessionGeneration = useRef(0);
-  const submitController = useRef<AbortController | undefined>(undefined);
-  const pollController = useRef<AbortController | undefined>(undefined);
-  const retryController = useRef<AbortController | undefined>(undefined);
+  const [apiKey, setApiKey] = useState(getStoredApiKey);
+  const [resultUnavailable, setResultUnavailable] = useState(false);
+  const abortRef = useRef<AbortController | null>(null);
 
-  const selectedTask = selectedIndex >= 0 ? tasks[selectedIndex] : undefined;
-  const selectedFile = selectedIndex >= 0 ? files[selectedIndex] : undefined;
-  const selectedOutputUrl = selectedTask?.result?.previewUrl;
-  const selectedControls = controlsByFile[selectedIndex] ?? controls;
-  const formatForSession = submittedFormat ?? outputFormat;
+  const selectedFile = files[selectedIndex];
+  const selectedResult = processed[selectedIndex];
+  const selectedControls = controlsByIndex[selectedIndex] ?? controls;
+  const isComplete = selectedResult?.status === "complete";
 
   useEffect(() => {
-    return () => {
-      submitController.current?.abort();
-      pollController.current?.abort();
-      retryController.current?.abort();
-    };
+    return () => { abortRef.current?.abort(); };
   }, []);
-
-  useEffect(() => {
-    let active = true;
-    void getUploadConfig()
-      .then((config) => {
-        if (active && !sameUploadConfig(config, DEFAULT_UPLOAD_CONFIG)) setUploadConfig(config);
-      })
-      .catch(() => undefined);
-    return () => {
-      active = false;
-    };
-  }, []);
-
-  useEffect(() => {
-    if (!jobId) return;
-    const generation = sessionGeneration.current;
-    const controller = new AbortController();
-    pollController.current?.abort();
-    pollController.current = controller;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    let disposed = false;
-
-    const schedulePoll = (delay: number, attempt: number) => {
-      timer = setTimeout(() => void poll(attempt), delay);
-    };
-
-    const poll = async (attempt: number) => {
-      try {
-        const status = await getJob(jobId, controller.signal);
-        if (controller.signal.aborted || disposed || sessionGeneration.current !== generation) return;
-        setTasks(status.tasks);
-        setResultUnavailable(false);
-        setSelectedTaskId((current) => current ?? status.tasks[0]?.taskId);
-        setSelectedIndex((current) => Math.min(current, Math.max(0, status.tasks.length - 1)));
-        setPollingError(undefined);
-        setCanRetryStatus(false);
-        if (status.tasks.every((task) => task.status === "complete" || task.status === "failed")) return;
-        schedulePoll(1000, 0);
-      } catch (pollError) {
-        if (controller.signal.aborted || disposed || sessionGeneration.current !== generation) return;
-        if (isExpiredError(pollError)) {
-          handleResultUnavailable();
-          return;
-        }
-        if (attempt < 3) {
-          setPollingError("Status refresh failed. Retrying shortly...");
-          schedulePoll(Math.min(100 * 2 ** attempt, 800), attempt + 1);
-        } else {
-          setPollingError("Status refresh stopped after several attempts.");
-          setCanRetryStatus(true);
-        }
-      }
-    };
-
-    void poll(0);
-    return () => {
-      disposed = true;
-      controller.abort();
-      if (timer) clearTimeout(timer);
-    };
-  }, [jobId, pollVersion]);
 
   const handleFilesSelected = (nextFiles: File[]) => {
-    sessionGeneration.current += 1;
-    submitController.current?.abort();
-    pollController.current?.abort();
-    retryController.current?.abort();
-    retryController.current = undefined;
-    setIsSubmitting(false);
+    abortRef.current?.abort();
     setFiles(nextFiles);
-    const nextPresetControls = { ...PRESET_DEFAULTS[preset] };
-    setControlsByFile(nextFiles.map(() => ({ ...nextPresetControls })));
-    setControls(nextPresetControls);
-    setTasks([]);
-    setJobId(undefined);
-    setSubmittedFormat(undefined);
-    setSelectedTaskId(undefined);
-    setPendingRetryTaskId(undefined);
+    const nextControls = nextFiles.map(() => ({ ...PRESET_DEFAULTS[preset] }));
+    setControlsByIndex(nextControls);
+    setControls(PRESET_DEFAULTS[preset]);
+    setProcessed([]);
+    setSelectedIndex(0);
     setError(undefined);
-    setPollingError(undefined);
-    setCanRetryStatus(false);
     setResultUnavailable(false);
-    setUploadProgress(undefined);
-  };
-
-  const handleValidationError = (message: string) => {
-    setError(message);
+    setIsProcessing(false);
   };
 
   const handleSelect = (index: number) => {
     setSelectedIndex(index);
-    setSelectedTaskId(tasks[index]?.taskId);
-    setControls(controlsByFile[index] ?? DEFAULT_CONTROLS);
+    setControls(controlsByIndex[index] ?? DEFAULT_CONTROLS);
   };
 
   const handleControlsChange = (nextControls: ManualControls) => {
     setControls(nextControls);
-    setControlsByFile((current) => current.map((item, index) => index === selectedIndex ? nextControls : item));
+    setControlsByIndex(prev => prev.map((item, i) => i === selectedIndex ? nextControls : item));
   };
-
-  const resetControls = () => handleControlsChange({ ...PRESET_DEFAULTS[preset] });
 
   const handlePresetChange = (nextPreset: Preset) => {
     setPreset(nextPreset);
     const nextControls = { ...PRESET_DEFAULTS[nextPreset] };
     setControls(nextControls);
-    setControlsByFile((current) => current.map(() => ({ ...nextControls })));
+    setControlsByIndex(prev => prev.map(() => ({ ...nextControls })));
+  };
+
+  const resetControls = () => handleControlsChange({ ...PRESET_DEFAULTS[preset] });
+
+  const processImage = async (index: number, file: File, taskControls: ManualControls): Promise<void> => {
+    const id = `img-${++nextId}`;
+    const objectUrl = URL.createObjectURL(file);
+
+    setProcessed(prev => [...prev, {
+      id, file, status: "analyzing", originalObjectUrl: objectUrl, outputFormat
+    }]);
+
+    const update = (update: Partial<ProcessedImage>) => {
+      setProcessed(prev => prev.map(p => p.id === id ? { ...p, ...update } : p));
+    };
+
+    try {
+      const img = await loadImage(objectUrl);
+      const fallback = presetDefaults(preset);
+      let enhanced: HTMLImageElement | null = null;
+
+      if (preset === "upscale" && upscaleMode === "ai") {
+        update({ status: "processing" });
+        enhanced = await openRouter.enhanceImage(img, taskControls, apiKey);
+        if (enhanced) {
+          const blob = await processor.imageToBlob(enhanced, outputFormat);
+          const enhancedUrl = URL.createObjectURL(blob);
+          update({ status: "complete", enhancedBlob: blob, enhancedObjectUrl: enhancedUrl });
+          return;
+        }
+      }
+
+      update({ status: "analyzing" });
+      const params = await openRouter.analyze(img, preset, taskControls, apiKey);
+      const merged = mergeControls(params, taskControls, preset);
+
+      update({ status: "processing" });
+      const blob = await processor.apply(img, merged, outputFormat);
+      const enhancedUrl = URL.createObjectURL(blob);
+      update({ status: "complete", enhancedBlob: blob, enhancedObjectUrl: enhancedUrl });
+    } catch (err) {
+      update({ status: "failed", error: "Processing failed" });
+    }
   };
 
   const handleSubmit = async () => {
-    if (files.length === 0) {
-      setError("Select at least one photo before enhancing.");
-      return;
-    }
-    if (isSubmitting) return;
-    sessionGeneration.current += 1;
-    const generation = sessionGeneration.current;
-    submitController.current?.abort();
-    pollController.current?.abort();
-    retryController.current?.abort();
-    retryController.current = undefined;
-    setJobId(undefined);
-    setTasks([]);
-    setSelectedTaskId(undefined);
-    setSelectedIndex(0);
-    setSubmittedFormat(undefined);
-    setPendingRetryTaskId(undefined);
+    if (files.length === 0) { setError("Select at least one photo."); return; }
+    if (isProcessing) return;
+    abortRef.current?.abort();
+    abortRef.current = new AbortController();
+
+    setProcessed([]);
     setError(undefined);
-    setPollingError(undefined);
-    setCanRetryStatus(false);
     setResultUnavailable(false);
-    setIsSubmitting(true);
-    setUploadProgress(0);
-    const controller = new AbortController();
-    submitController.current = controller;
-    const format = outputFormat;
-    setSubmittedFormat(format);
-    try {
-      const summary = await createJob(
-        files,
-        preset,
-        controlsByFile[0] ?? controls,
-        format,
-        controller.signal,
-        controlsByFile,
-        setUploadProgress,
-        preset === "upscale" ? upscaleMode : undefined,
-        apiKey || undefined
-      );
-      if (controller.signal.aborted || sessionGeneration.current !== generation) return;
-      setJobId(summary.jobId);
-      setTasks(summary.tasks);
-      setSelectedTaskId(summary.tasks[0]?.taskId);
-      setSelectedIndex(0);
-      setUploadProgress(undefined);
-    } catch (submitError) {
-      if (!controller.signal.aborted && sessionGeneration.current === generation) {
-        setSubmittedFormat(undefined);
-        setError(getErrorMessage(submitError));
-        setUploadProgress(undefined);
-      }
-    } finally {
-      if (sessionGeneration.current === generation && submitController.current === controller) {
-        setIsSubmitting(false);
-      }
+    setIsProcessing(true);
+
+    for (let i = 0; i < files.length; i++) {
+      if (abortRef.current?.signal.aborted) break;
+      await processImage(i, files[i], controlsByIndex[i] ?? controls);
     }
+    setIsProcessing(false);
   };
 
-  const handleRetry = async (taskId: string) => {
-    if (!jobId || pendingRetryTaskId) return;
-    const generation = sessionGeneration.current;
-    const controller = new AbortController();
-    retryController.current?.abort();
-    retryController.current = controller;
-    setPendingRetryTaskId(taskId);
-    setError(undefined);
-    try {
-      await retryTask(jobId, taskId, controller.signal);
-      if (controller.signal.aborted || sessionGeneration.current !== generation) return;
-      setTasks((current) => current.map((task) => task.taskId === taskId ? { ...task, status: "queued", error: undefined } : task));
-       setSelectedTaskId(taskId);
-       setSelectedIndex(tasks.findIndex((task) => task.taskId === taskId));
-      setPollingError(undefined);
-      setCanRetryStatus(false);
-      setPollVersion((current) => current + 1);
-    } catch (retryError) {
-      if (!controller.signal.aborted && sessionGeneration.current === generation) {
-        if (isExpiredError(retryError)) {
-          handleResultUnavailable();
-        } else {
-          setError(getErrorMessage(retryError));
-        }
-      }
-    } finally {
-      if (sessionGeneration.current === generation && retryController.current === controller) {
-        retryController.current = undefined;
-        setPendingRetryTaskId(undefined);
-      }
-    }
-  };
-
-  const retryStatus = () => {
-    setPollingError(undefined);
-    setCanRetryStatus(false);
-    setPollVersion((current) => current + 1);
-  };
-
-  const handleResultUnavailable = () => {
-    setResultUnavailable(true);
-    setError(undefined);
-    setPollingError(undefined);
-    setCanRetryStatus(false);
-  };
-
-  const handleDownload = async (taskId: string, format: OutputFormat) => {
-    try {
-      await downloadResult(jobId!, taskId, format);
-    } catch (downloadError) {
-      if (isExpiredError(downloadError)) {
-        handleResultUnavailable();
-      } else {
-        setError(getErrorMessage(downloadError));
-      }
-    }
+  const handleDownload = async () => {
+    const result = processed[selectedIndex];
+    if (!result?.enhancedBlob) return;
+    const url = URL.createObjectURL(result.enhancedBlob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `photo-enhanced.${result.outputFormat}`;
+    link.click();
+    URL.revokeObjectURL(url);
   };
 
   const handleDownloadAll = async () => {
-    for (const item of batchDownloads) {
-      try {
-        await downloadResult(jobId!, item.taskId, item.format);
-      } catch (downloadError) {
-        if (isExpiredError(downloadError)) handleResultUnavailable();
-        else setError(getErrorMessage(downloadError));
-        return;
-      }
+    for (const result of processed) {
+      if (!result.enhancedBlob) continue;
+      const url = URL.createObjectURL(result.enhancedBlob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `photo-enhanced.${result.outputFormat}`;
+      link.click();
+      URL.revokeObjectURL(url);
+      await new Promise(r => setTimeout(r, 300));
     }
   };
 
-  const downloadHref = useMemo(() => {
-    if (resultUnavailable || !jobId || !selectedTask || selectedTask.status !== "complete" || !selectedTask.result?.previewUrl) return undefined;
-    return getDownloadUrl(jobId, selectedTask.taskId, formatForSession);
-  }, [formatForSession, jobId, resultUnavailable, selectedTask]);
-
-  const batchDownloads = useMemo(() => {
-    if (!jobId || resultUnavailable) return [];
-    return tasks
-        .filter((task) => task.status === "complete" && task.result?.previewUrl)
-        .map((task) => ({
-          href: getDownloadUrl(jobId, task.taskId, formatForSession),
-          taskId: task.taskId,
-          format: formatForSession
-      }));
-  }, [formatForSession, jobId, resultUnavailable, tasks]);
+  const handleEnhanceAnother = () => {
+    handleFilesSelected([]);
+  };
 
   return (
     <main className="app-shell">
       <header className="topbar">
         <a className="brand" href="/" aria-label="Photo Enhancer home"><span className="brand-mark">PE</span> Photo Enhancer</a>
-        <span className="session-note">No account needed · files expire automatically</span>
+        <span className="session-note">Runs in your browser · your key stays local</span>
         <button className="text-button settings-button" type="button" onClick={() => setSettingsOpen(true)} aria-label="Open settings">
           <span className="settings-icon">⚙</span>
           <span className="settings-label">Settings</span>
@@ -340,20 +203,14 @@ export function App() {
           <h1>Make good photos feel finished.</h1>
           <p>Upload a small batch, choose a finish, and review every result before downloading.</p>
         </section>
-        <UploadDropzone files={files} config={uploadConfig} onFilesSelected={handleFilesSelected} onValidationError={handleValidationError} />
-        {uploadProgress !== undefined && <p className="upload-progress" role="status">Uploading photos: {uploadProgress}%</p>}
-        {(error || pollingError) && (
-          <div className="error-message" role="alert">
-            <span>{error ?? pollingError}</span>
-            {canRetryStatus && <button className="text-button" type="button" onClick={retryStatus}>Retry status</button>}
-          </div>
-        )}
+        <UploadDropzone files={files} config={{ maxFileBytes: 10 * 1024 * 1024, maxPixels: 25_000_000, maxBatchSize: 5, supportedMimeTypes: ["image/jpeg", "image/png", "image/webp", "image/avif"] }} onFilesSelected={handleFilesSelected} onValidationError={setError} />
+        {error && <div className="error-message" role="alert">{error}</div>}
         <div className="workbench-grid">
-          <FileQueue files={files} tasks={tasks} selectedIndex={selectedIndex} onSelect={handleSelect} onRetry={handleRetry} pendingRetryTaskId={pendingRetryTaskId} />
-          <ImagePreview sourceFile={selectedFile} previewUrl={selectedOutputUrl} taskStatus={selectedTask?.status} taskError={selectedTask?.error} resultUnavailable={resultUnavailable} onResultUnavailable={handleResultUnavailable} onEnhanceAnother={() => handleFilesSelected([])} />
+          <FileQueue files={files} tasks={processed.map(p => ({ taskId: p.id, status: p.status === "idle" ? "queued" : p.status as any, error: p.error }))} selectedIndex={selectedIndex} onSelect={handleSelect} pendingRetryTaskId={undefined} />
+          <ImagePreview sourceFile={selectedFile} previewUrl={selectedResult?.enhancedObjectUrl} taskStatus={selectedResult?.status} taskError={selectedResult?.error} resultUnavailable={resultUnavailable} onResultUnavailable={() => setResultUnavailable(true)} onEnhanceAnother={handleEnhanceAnother} />
           <div className="controls-column">
-            <PresetControls preset={preset} controls={selectedControls} outputFormat={formatForSession} upscaleMode={upscaleMode} formatDisabled={Boolean(submittedFormat)} disabled={isSubmitting} onPresetChange={handlePresetChange} onControlsChange={handleControlsChange} onOutputFormatChange={setOutputFormat} onUpscaleModeChange={setUpscaleMode} onReset={resetControls} onSubmit={handleSubmit} />
-            <DownloadActions jobId={jobId} taskId={selectedTask?.taskId} format={formatForSession} href={downloadHref} batch={batchDownloads} onDownload={selectedTask?.taskId ? () => handleDownload(selectedTask.taskId, formatForSession) : undefined} onDownloadAll={handleDownloadAll} />
+            <PresetControls preset={preset} controls={selectedControls} outputFormat={outputFormat} upscaleMode={upscaleMode} disabled={isProcessing} onPresetChange={handlePresetChange} onControlsChange={handleControlsChange} onOutputFormatChange={(f) => { setOutputFormat(f); setProcessed(prev => prev.map(p => p.id === selectedResult?.id ? { ...p, outputFormat: f } : p)); }} onUpscaleModeChange={setUpscaleMode} onReset={resetControls} onSubmit={handleSubmit} />
+            <DownloadActions jobId="" taskId={selectedResult?.id ?? ""} format={outputFormat} href="" batch={processed.filter(p => p.status === "complete").map(p => ({ taskId: p.id, format: p.outputFormat, href: "" }))} onDownload={isComplete ? handleDownload : undefined} onDownloadAll={handleDownloadAll} />
           </div>
         </div>
       </div>
@@ -362,17 +219,11 @@ export function App() {
   );
 }
 
-function getErrorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : "Something went wrong. Please try again.";
-}
-
-function isExpiredError(error: unknown): boolean {
-  return typeof error === "object" && error !== null && "status" in error && error.status === 410;
-}
-
-function sameUploadConfig(left: UploadConfig, right: UploadConfig): boolean {
-  return left.maxFileBytes === right.maxFileBytes &&
-    left.maxPixels === right.maxPixels &&
-    left.maxBatchSize === right.maxBatchSize &&
-    left.supportedMimeTypes.join(",") === right.supportedMimeTypes.join(",");
+function loadImage(url: string): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error("Failed to load image"));
+    img.src = url;
+  });
 }
