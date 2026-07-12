@@ -94,6 +94,37 @@ describe("Photo enhancer workbench", () => {
     expect(screen.getByAltText(/enhanced/i)).toHaveAttribute("src", "/preview");
   });
 
+  it("shows an unavailable result state for a complete task without result metadata", async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.getJob).mockResolvedValue({
+      jobId: "job-1",
+      preset: "auto",
+      controls: {
+        strength: 50,
+        sharpness: 50,
+        noiseReduction: 50,
+        brightness: 50,
+        contrast: 50
+      },
+      createdAt: 0,
+      expiresAt: Date.now() + 60_000,
+      tasks: [{ taskId: "task-1", status: "complete" }]
+    });
+    render(<App />);
+
+    await user.upload(screen.getByLabelText(/upload photos/i), pngFile);
+    await user.click(screen.getByRole("button", { name: /enhance photos/i }));
+
+    expect(await screen.findByRole("heading", { name: "Result unavailable or expired" })).toBeVisible();
+    expect(screen.queryByRole("slider", { name: /before and after/i })).not.toBeInTheDocument();
+    expect(screen.queryByAltText(/original/i)).not.toBeInTheDocument();
+    expect(screen.queryByAltText(/enhanced/i)).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /download/i })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /enhance another/i }));
+    expect(screen.getByText("Drop images here or press Enter to browse")).toBeVisible();
+  });
+
   it("offers retry for failed tasks and download for completed tasks", async () => {
     const user = userEvent.setup();
     vi.mocked(api.getJob)

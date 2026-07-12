@@ -187,7 +187,7 @@ export function App() {
   };
 
   const downloadHref = useMemo(() => {
-    if (!jobId || !selectedTask || selectedTask.status !== "complete") return undefined;
+    if (!jobId || !selectedTask || selectedTask.status !== "complete" || !selectedTask.result?.previewUrl) return undefined;
     return getDownloadUrl(jobId, selectedTask.taskId, formatForSession);
   }, [formatForSession, jobId, selectedTask]);
 
@@ -212,7 +212,7 @@ export function App() {
         )}
         <div className="workbench-grid">
           <FileQueue files={files} tasks={tasks} selectedTaskId={selectedTaskId} onSelect={setSelectedTaskId} onRetry={handleRetry} pendingRetryTaskId={pendingRetryTaskId} jobId={jobId} />
-          <ImagePreview sourceFile={selectedFile} previewUrl={selectedOutputUrl} taskStatus={selectedTask?.status} taskError={selectedTask?.error} />
+          <ImagePreview sourceFile={selectedFile} previewUrl={selectedOutputUrl} taskStatus={selectedTask?.status} taskError={selectedTask?.error} onEnhanceAnother={() => handleFilesSelected([])} />
           <div className="controls-column">
             <PresetControls preset={preset} controls={controls} outputFormat={formatForSession} formatDisabled={Boolean(submittedFormat)} disabled={isSubmitting} onPresetChange={setPreset} onControlsChange={setControls} onOutputFormatChange={setOutputFormat} onSubmit={handleSubmit} />
             <DownloadActions jobId={jobId} taskId={selectedTask?.taskId} format={formatForSession} href={downloadHref} />

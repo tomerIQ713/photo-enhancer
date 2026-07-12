@@ -5,9 +5,10 @@ interface ImagePreviewProps {
   previewUrl?: string;
   taskStatus?: string;
   taskError?: string;
+  onEnhanceAnother?: () => void;
 }
 
-export function ImagePreview({ sourceFile, previewUrl, taskStatus, taskError }: ImagePreviewProps) {
+export function ImagePreview({ sourceFile, previewUrl, taskStatus, taskError, onEnhanceAnother }: ImagePreviewProps) {
   const [comparison, setComparison] = useState(50);
   const [originalObjectUrl, setOriginalObjectUrl] = useState<string>();
 
@@ -34,6 +35,19 @@ export function ImagePreview({ sourceFile, previewUrl, taskStatus, taskError }: 
         </div>
         <p className="preview-error" role="alert">{taskError ?? "This photo could not be enhanced."}</p>
         {originalObjectUrl && <img className="single-preview-image" src={originalObjectUrl} alt="Original photo" />}
+      </section>
+    );
+  }
+
+  if (taskStatus === "complete" && !previewUrl) {
+    return (
+      <section className="preview-stage unavailable-preview" aria-labelledby="preview-heading">
+        <div className="preview-header">
+          <div><p className="section-kicker">Preview</p><h2 id="preview-heading">Result unavailable or expired</h2></div>
+          <span className="preview-status">Unavailable</span>
+        </div>
+        <p className="preview-error" role="status">The completed result is no longer available, so there is no preview or download for this task.</p>
+        {onEnhanceAnother && <button className="primary-button" type="button" onClick={onEnhanceAnother}>Enhance another</button>}
       </section>
     );
   }

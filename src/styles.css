@@ -59,6 +59,7 @@ h2 { font-size: 1.1rem; letter-spacing: -0.025em; margin-bottom: 0; }
 .preview-stage { background: var(--preview); color: white; min-width: 0; padding: 22px; }
 .preview-stage .section-kicker { color: #95d5ae; }.preview-status { color: #b9c7bf; font-size: 0.75rem; }
 .empty-preview { min-height: 530px; padding: 32px; display: flex; flex-direction: column; justify-content: center; }.empty-preview h2 { font-size: 1.65rem; max-width: 14ch; }.empty-preview p:last-child { color: #b9c7bf; max-width: 32ch; }
+.unavailable-preview { min-height: 530px; }.unavailable-preview .primary-button { margin-top: 8px; }
 .failed-preview { min-height: 530px; }.preview-error { background: #472624; border-left: 3px solid #e5a29a; color: #ffe2df; margin: 28px 0 18px; padding: 12px; }.single-preview-image { display: block; max-height: 330px; max-width: 100%; object-fit: contain; width: 100%; }
 .comparison { aspect-ratio: 4 / 3; background: #121816; margin-top: 28px; overflow: hidden; position: relative; }
 .comparison-image { display: block; height: 100%; object-fit: contain; width: 100%; }
