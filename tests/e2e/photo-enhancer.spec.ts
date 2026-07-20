@@ -67,6 +67,20 @@ test("retries a failed task and shows its completed result", async ({ page }) =>
   await expect(page.getByRole("link", { name: /download png/i })).toBeVisible();
 });
 
+async function uploadAndCustomPrompt(page: Page): Promise<void> {
+  await page.goto("/");
+  await page.getByLabel(/upload photos/i).setInputFiles(samplePath);
+  await page.getByRole("button", { name: /custom prompt/i }).click();
+  await page.getByRole("textbox", { name: /edit instructions/i }).fill("make the sky purple");
+  await page.getByRole("button", { name: /enhance photos/i }).click();
+}
+
+test("uploads, applies a custom prompt, and compares the result", async ({ page }) => {
+  await uploadAndCustomPrompt(page);
+
+  await expect(page.getByRole("slider", { name: /before and after/i })).toBeVisible();
+});
+
 for (const viewport of [
   { width: 1440, height: 900 },
   { width: 900, height: 1000 },
