@@ -5,12 +5,14 @@ interface PresetControlsProps {
   controls: ManualControls;
   outputFormat: OutputFormat;
   upscaleMode: UpscaleMode;
+  prompt?: string;
   disabled?: boolean;
   formatDisabled?: boolean;
   onPresetChange: (preset: Preset) => void;
   onControlsChange: (controls: ManualControls) => void;
   onOutputFormatChange: (format: OutputFormat) => void;
   onUpscaleModeChange: (mode: UpscaleMode) => void;
+  onPromptChange: (prompt: string) => void;
   onReset: () => void;
   onSubmit: () => void;
 }
@@ -28,12 +30,14 @@ export function PresetControls({
   controls,
   outputFormat,
   upscaleMode,
+  prompt = "",
   disabled = false,
   formatDisabled = false,
   onPresetChange,
   onControlsChange,
   onOutputFormatChange,
   onUpscaleModeChange,
+  onPromptChange,
   onReset,
   onSubmit
 }: PresetControlsProps) {
@@ -51,6 +55,9 @@ export function PresetControls({
         </button>
         <button type="button" className={preset === "upscale" ? "preset-button is-active" : "preset-button"} onClick={() => onPresetChange("upscale")} disabled={disabled}>
           <strong>Upscale</strong><span>Bring out detail in smaller images</span>
+        </button>
+        <button type="button" className={preset === "custom" ? "preset-button is-active" : "preset-button"} onClick={() => onPresetChange("custom")} disabled={disabled}>
+          <strong>Custom prompt</strong><span>Describe any edit in your own words</span>
         </button>
       </div>
       {preset === "upscale" && (
@@ -73,24 +80,41 @@ export function PresetControls({
           </button>
         </div>
       )}
-      <div className="control-list">
-        {fields.map(([name, label]) => (
-          <label className="range-field" key={name}>
-            <span><span>{label}</span><output>{controls[name]}</output></span>
-            <input
-              type="range"
-              min="0"
-              max="100"
-              value={controls[name]}
-              aria-label={label}
-              disabled={disabled}
-              onChange={(event) => onControlsChange({ ...controls, [name]: Number(event.target.value) })}
-            />
-          </label>
-        ))}
-      </div>
+      {preset !== "custom" && (
+        <div className="control-list">
+          {fields.map(([name, label]) => (
+            <label className="range-field" key={name}>
+              <span><span>{label}</span><output>{controls[name]}</output></span>
+              <input
+                type="range"
+                min="0"
+                max="100"
+                value={controls[name]}
+                aria-label={label}
+                disabled={disabled}
+                onChange={(event) => onControlsChange({ ...controls, [name]: Number(event.target.value) })}
+              />
+            </label>
+          ))}
+        </div>
+      )}
+      {preset === "custom" && (
+        <label className="prompt-field">
+          <span>Edit instructions</span>
+          <textarea
+            aria-label="Edit instructions"
+            value={prompt}
+            rows={4}
+            maxLength={1000}
+            disabled={disabled}
+            placeholder="Describe any edit — e.g. make the sky purple, remove the background, add a hat"
+            onChange={(event) => onPromptChange(event.target.value)}
+          />
+          <span className="prompt-counter">{prompt.length}/1000</span>
+        </label>
+      )}
       <button className="text-button reset-button" type="button" onClick={onReset} disabled={disabled}>
-        Reset controls to preset defaults
+        {preset === "custom" ? "Clear prompt" : "Reset controls to preset defaults"}
       </button>
       <label className="format-field">
         <span>Download format</span>
@@ -99,7 +123,7 @@ export function PresetControls({
           <option value="jpg">JPG</option>
         </select>
       </label>
-      <button className="primary-button" type="button" onClick={onSubmit} disabled={disabled}>
+      <button className="primary-button" type="button" onClick={onSubmit} disabled={disabled || (preset === "custom" && !prompt.trim())}>
         {disabled ? "Enhancing photos..." : "Enhance photos"}
       </button>
     </section>

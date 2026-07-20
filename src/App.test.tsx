@@ -833,3 +833,73 @@ describe("Photo enhancer workbench", () => {
     await user.click(screen.getByRole("button", { name: /fit to view/i }));
   });
 });
+
+describe("Custom prompt preset", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("shows the Custom prompt button after a file is selected", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.upload(screen.getByLabelText(/upload photos/i), pngFile);
+
+    expect(screen.getByRole("button", { name: /custom prompt/i })).toBeVisible();
+  });
+
+  it("shows a textarea and hides sliders when Custom is selected", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.upload(screen.getByLabelText(/upload photos/i), pngFile);
+    await user.click(screen.getByRole("button", { name: /custom prompt/i }));
+
+    expect(screen.getByRole("textbox", { name: /edit instructions/i })).toBeVisible();
+    expect(screen.queryByRole("slider", { name: /enhancement strength/i })).toBeNull();
+    expect(screen.queryByRole("slider", { name: /sharpness/i })).toBeNull();
+    expect(screen.queryByRole("group", { name: /upscale method/i })).toBeNull();
+  });
+
+  it("disables the Enhance button when the prompt is empty", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.upload(screen.getByLabelText(/upload photos/i), pngFile);
+    await user.click(screen.getByRole("button", { name: /custom prompt/i }));
+
+    expect(screen.getByRole("button", { name: /enhance photos/i })).toBeDisabled();
+  });
+
+  it("enables the Enhance button when a prompt is entered", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.upload(screen.getByLabelText(/upload photos/i), pngFile);
+    await user.click(screen.getByRole("button", { name: /custom prompt/i }));
+    await user.type(screen.getByRole("textbox", { name: /edit instructions/i }), "make the sky purple");
+
+    expect(screen.getByRole("button", { name: /enhance photos/i })).toBeEnabled();
+  });
+
+  it("keeps a separate prompt per image in a batch", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.upload(screen.getByLabelText(/upload photos/i), [pngFile, secondPngFile]);
+    await user.click(screen.getByRole("button", { name: /custom prompt/i }));
+
+    const textarea = screen.getByRole("textbox", { name: /edit instructions/i });
+    await user.clear(textarea);
+    await user.type(textarea, "edit first image");
+
+    const secondThumb = screen.getAllByAltText(/queue thumbnail/i)[1];
+    await user.click(secondThumb);
+
+    expect(screen.getByRole("textbox", { name: /edit instructions/i })).toHaveValue("");
+  });
+});

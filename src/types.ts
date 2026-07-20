@@ -1,4 +1,4 @@
-export type Preset = "auto" | "upscale";
+export type Preset = "auto" | "upscale" | "custom";
 export type UpscaleMode = "ai" | "classic";
 export type OutputFormat = "jpg" | "png";
 

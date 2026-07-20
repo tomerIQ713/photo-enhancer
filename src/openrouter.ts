@@ -14,9 +14,16 @@ export interface EnhancementParameters {
   contrast: number;
 }
 
-export type Preset = "auto" | "upscale";
+export type Preset = "auto" | "upscale" | "custom";
 export type UpscaleMode = "ai" | "classic";
 export type OutputFormat = "jpg" | "png";
+
+export class AuthError extends Error {
+  constructor() {
+    super("Invalid OpenRouter API key. Check your key in Settings.");
+    this.name = "AuthError";
+  }
+}
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, Number.isFinite(value) ? value : min));
@@ -121,6 +128,7 @@ export class OpenRouterClient {
         }
 
         if (!response.ok) {
+          if (response.status === 401 || response.status === 403) throw new AuthError();
           if (![429, 500, 502, 503, 504].includes(response.status) || attempt === 2) return fallback;
           continue;
         }
@@ -181,6 +189,61 @@ export class OpenRouterClient {
         }
 
         if (!response.ok) {
+          if (response.status === 401 || response.status === 403) throw new AuthError();
+          if (![429, 500, 502, 503, 504].includes(response.status) || attempt === 2) return null;
+          continue;
+        }
+
+        try {
+          const body = await response.json() as { data: Array<{ b64_json: string }> };
+          if (!body.data?.[0]?.b64_json) return null;
+          return await this.base64ToImage(body.data[0].b64_json);
+        } catch {
+          return null;
+        }
+      }
+      return null;
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  async editImage(
+    image: HTMLImageElement,
+    prompt: string,
+    apiKey: string
+  ): Promise<HTMLImageElement | null> {
+    if (!apiKey) return image;
+
+    const dataUrl = this.toCanvas(image).toDataURL("image/png");
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
+
+    try {
+      for (let attempt = 0; attempt < 3; attempt++) {
+        let response: Response;
+        try {
+          response = await fetch("https://openrouter.ai/api/v1/images", {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${apiKey}`,
+              "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+              model: this.imageModel,
+              prompt,
+              input_references: [{ type: "image_url", image_url: { url: dataUrl } }],
+              output_format: "png"
+            }),
+            signal: controller.signal
+          });
+        } catch {
+          if (controller.signal.aborted || attempt === 2) return null;
+          continue;
+        }
+
+        if (!response.ok) {
+          if (response.status === 401 || response.status === 403) throw new AuthError();
           if (![429, 500, 502, 503, 504].includes(response.status) || attempt === 2) return null;
           continue;
         }
