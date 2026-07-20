@@ -25,6 +25,25 @@ export function validateManualControls(input: unknown): ManualControls {
   return manualControlsSchema.parse(input);
 }
 
+const MAX_PROMPT_LENGTH = 1000;
+
+export function validatePrompt(input: unknown): string {
+  if (typeof input !== "string") {
+    throw new Error("Prompt must not be empty");
+  }
+  const trimmed = input.trim();
+  if (trimmed === "") {
+    throw new Error("Prompt must not be empty");
+  }
+  if (trimmed.length > MAX_PROMPT_LENGTH) {
+    throw new Error("Prompt must be 1000 characters or fewer");
+  }
+  if (/[\x00-\x1f\x7f]/.test(trimmed)) {
+    throw new Error("Prompt must not contain control characters");
+  }
+  return trimmed;
+}
+
 const MIME_TO_FORMAT: Record<string, SupportedImageFormat> = {
   "image/jpeg": "jpeg",
   "image/jpg": "jpeg",

@@ -4,6 +4,7 @@ import {
   manualControlsSchema,
   validateManualControls,
   validateBatchSize,
+  validatePrompt,
   validateUpload
 } from "./validation";
 import { MAX_FILE_BYTES, MAX_PIXELS } from "./config";
@@ -52,6 +53,28 @@ describe("manual controls validation", () => {
     expect(() =>
       validateManualControls({ ...validControls, [name]: Number.POSITIVE_INFINITY })
     ).toThrow();
+  });
+});
+
+describe("prompt validation", () => {
+  it("accepts a valid prompt and trims whitespace", () => {
+    expect(validatePrompt("  make the sky purple  ")).toBe("make the sky purple");
+  });
+
+  it("rejects an empty prompt", () => {
+    expect(() => validatePrompt("   ")).toThrow("Prompt must not be empty");
+  });
+
+  it("rejects a prompt over 1000 characters", () => {
+    expect(() => validatePrompt("a".repeat(1001))).toThrow("Prompt must be 1000 characters or fewer");
+  });
+
+  it("rejects a prompt containing control characters", () => {
+    expect(() => validatePrompt("hello\u0000world")).toThrow("Prompt must not contain control characters");
+  });
+
+  it("accepts a prompt of exactly 1000 characters", () => {
+    expect(validatePrompt("a".repeat(1000))).toBe("a".repeat(1000));
   });
 });
 

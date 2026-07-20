@@ -1,4 +1,4 @@
-export type Preset = "auto" | "upscale";
+export type Preset = "auto" | "upscale" | "custom";
 export type UpscaleMode = "ai" | "classic";
 
 export interface ManualControls {
@@ -50,6 +50,7 @@ export interface ImageTask {
   outputPath?: string;
   outputFormat?: OutputFormat;
   controls?: ManualControls;
+  prompt?: string;
   error?: string;
 }
 
@@ -59,6 +60,7 @@ export interface Job {
   controls: ManualControls;
   upscaleMode: UpscaleMode;
   apiKey?: string;
+  prompt?: string;
   tasks: ImageTask[];
   createdAt: number;
   expiresAt: number;
