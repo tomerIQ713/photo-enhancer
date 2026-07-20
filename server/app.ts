@@ -18,6 +18,7 @@ import { ProcessingPipeline } from "./processing/pipeline";
 import {
   validateBatchSize,
   validateManualControls,
+  validatePrompt,
   validateUpload
 } from "./validation";
 import type { ImageTask, ManualControls, OutputFormat, Preset, UpscaleMode } from "./types";
@@ -30,18 +31,20 @@ const DEFAULT_CONTROLS: ManualControls = {
   contrast: 50
 };
 
-const presetSchema = z.enum(["auto", "upscale"]);
+const presetSchema = z.enum(["auto", "upscale", "custom"]);
 const outputFormatSchema = z.enum(["jpg", "png"]);
 const upscaleModeSchema = z.enum(["ai", "classic"]);
 const controlsFieldSchema = z.string().optional();
 const controlsByTaskFieldSchema = z.string().optional();
+const promptFieldSchema = z.string().optional();
+const promptsByTaskFieldSchema = z.string().optional();
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: {
     fileSize: MAX_FILE_BYTES,
     files: MAX_BATCH_SIZE,
-    fields: 5,
-    parts: MAX_BATCH_SIZE + 5,
+    fields: 7,
+    parts: MAX_BATCH_SIZE + 7,
     fieldSize: 16_384
   }
 });
@@ -78,6 +81,20 @@ function parseControlsByTask(input: unknown): ManualControls[] | undefined {
   return parsed.map((controls) => validateManualControls(controls));
 }
 
+function parsePrompt(input: unknown): string | undefined {
+  const field = promptFieldSchema.parse(input);
+  if (field === undefined || field.trim() === "") return undefined;
+  return validatePrompt(field);
+}
+
+function parsePromptsByTask(input: unknown): string[] | undefined {
+  const field = promptsByTaskFieldSchema.parse(input);
+  if (field === undefined || field.trim() === "") return undefined;
+  const parsed = JSON.parse(field);
+  if (!Array.isArray(parsed)) throw new Error("Invalid per-task prompts");
+  return parsed.map((prompt) => validatePrompt(prompt));
+}
+
 function safeUploadError(error: unknown): string {
   const fileSizeLimit = formatFileSizeLimit(MAX_FILE_BYTES);
   if (error instanceof multer.MulterError) {
@@ -106,6 +123,9 @@ function safeUploadError(error: unknown): string {
   }
   if (/batch|maximum batch|per-image controls/i.test(message)) {
     return `Choose between 1 and ${MAX_BATCH_SIZE} photos.`;
+  }
+  if (/prompt/i.test(message)) {
+    return "Invalid prompt";
   }
   return "Invalid request";
 }
@@ -226,6 +246,8 @@ export function createApp(options: CreateAppOptions = {}): PhotoEnhancerApp {
         let outputFormat: OutputFormat;
         let controlsByTask: ManualControls[] | undefined;
         let upscaleMode: UpscaleMode;
+        let prompt: string | undefined;
+        let promptsByTask: string[] | undefined;
         let acceptedFiles: Array<{
           id: string;
           buffer: Buffer;
@@ -246,6 +268,14 @@ export function createApp(options: CreateAppOptions = {}): PhotoEnhancerApp {
           upscaleMode = (upscaleModeSchema.parse(
             request.body?.upscaleMode ?? "classic"
           ) as UpscaleMode) ?? "classic";
+          prompt = parsePrompt(request.body?.prompt);
+          promptsByTask = parsePromptsByTask(request.body?.promptsByTask);
+          if (promptsByTask && promptsByTask.length !== files.length) {
+            throw new Error("Invalid per-task prompts");
+          }
+          if (preset === "custom" && !prompt && (!promptsByTask || promptsByTask.length === 0)) {
+            throw new Error("Prompt must not be empty");
+          }
           acceptedFiles = [];
           for (const file of files) {
             const metadata = await validateUploadForRequest(file);
@@ -269,7 +299,9 @@ export function createApp(options: CreateAppOptions = {}): PhotoEnhancerApp {
             outputFormat,
             controlsByTask,
             upscaleMode,
-            request.get("x-openrouter-key") || undefined
+            request.get("x-openrouter-key") || undefined,
+            prompt,
+            promptsByTask
           );
         } catch (error) {
           if (error instanceof CapacityError) {

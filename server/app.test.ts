@@ -609,4 +609,64 @@ describe("photo jobs API", () => {
 
     expect((await request(app).get(`/api/jobs/${jobId}`)).status).toBe(410);
   });
+
+  it("accepts a custom preset with a prompt and stores it on the job", async () => {
+    const { app, store } = createTestApp();
+    const samplePng = await createSamplePng();
+
+    const response = await request(app)
+      .post("/api/jobs")
+      .attach("files", samplePng, { filename: "custom.png", contentType: "image/png" })
+      .field("preset", "custom")
+      .field("prompt", "make the sky purple");
+
+    expect(response.status).toBe(202);
+    expect(response.body.jobId).toEqual(expect.any(String));
+
+    const job = store.get(response.body.jobId);
+    expect(job?.prompt).toBe("make the sky purple");
+  });
+
+  it("rejects a custom preset with an empty prompt", async () => {
+    const { app } = createTestApp();
+    const samplePng = await createSamplePng();
+
+    const response = await request(app)
+      .post("/api/jobs")
+      .attach("files", samplePng, { filename: "custom.png", contentType: "image/png" })
+      .field("preset", "custom")
+      .field("prompt", "   ");
+
+    expect(response.status).toBe(400);
+  });
+
+  it("rejects a custom preset with no prompt field", async () => {
+    const { app } = createTestApp();
+    const samplePng = await createSamplePng();
+
+    const response = await request(app)
+      .post("/api/jobs")
+      .attach("files", samplePng, { filename: "custom.png", contentType: "image/png" })
+      .field("preset", "custom");
+
+    expect(response.status).toBe(400);
+  });
+
+  it("stores per-task prompts from promptsByTask", async () => {
+    const { app, store } = createTestApp();
+    const pngA = await createSamplePng();
+    const pngB = await createSamplePng({ r: 0, g: 0, b: 255 });
+
+    const response = await request(app)
+      .post("/api/jobs")
+      .attach("files", pngA, { filename: "a.png", contentType: "image/png" })
+      .attach("files", pngB, { filename: "b.png", contentType: "image/png" })
+      .field("preset", "custom")
+      .field("promptsByTask", JSON.stringify(["edit A", "edit B"]));
+
+    expect(response.status).toBe(202);
+    const job = store.get(response.body.jobId);
+    expect(job?.tasks[0].prompt).toBe("edit A");
+    expect(job?.tasks[1].prompt).toBe("edit B");
+  });
 });

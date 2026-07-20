@@ -98,14 +98,16 @@ export class JobStore {
     outputFormat: OutputFormat = "png",
     controlsByTask?: ManualControls[],
     upscaleMode: UpscaleMode = "classic",
-    apiKey?: string
+    apiKey?: string,
+    prompt?: string,
+    promptsByTask?: string[]
   ): Job {
     const buffers = files.map((file) => ({
       id: file.id,
       buffer: fs.readFileSync(file.originalPath),
       metadata: file.metadata
     }));
-    return this.createFromBuffers(buffers, preset, controls, outputFormat, controlsByTask, upscaleMode, apiKey);
+    return this.createFromBuffers(buffers, preset, controls, outputFormat, controlsByTask, upscaleMode, apiKey, prompt, promptsByTask);
   }
 
   createFromBuffers(
@@ -115,7 +117,9 @@ export class JobStore {
     outputFormat: OutputFormat = "png",
     controlsByTask?: ManualControls[],
     upscaleMode: UpscaleMode = "classic",
-    apiKey?: string
+    apiKey?: string,
+    prompt?: string,
+    promptsByTask?: string[]
   ): Job {
     const reservedBytes = files.reduce(
       (total, file) => total + file.buffer.length + this.maxOutputBytes,
@@ -141,7 +145,8 @@ export class JobStore {
         metadata: { ...file.metadata },
         status: "queued" as const,
         outputFormat,
-        controls: { ...(controlsByTask?.[index] ?? controls) }
+        controls: { ...(controlsByTask?.[index] ?? controls) },
+        prompt: promptsByTask?.[index] ?? prompt
       };
     });
     const job: Job = {
@@ -150,6 +155,7 @@ export class JobStore {
       controls: { ...controls },
       upscaleMode,
       apiKey,
+      prompt,
       tasks,
       createdAt,
       expiresAt: createdAt + this.ttlMs

@@ -14,8 +14,20 @@ export class ProcessingPipeline {
     controls: ManualControls,
     outputFormat: OutputFormat,
     upscaleMode: UpscaleMode = "classic",
-    apiKey?: string
+    apiKey?: string,
+    prompt?: string
   ): Promise<Buffer> {
+    if (preset === "custom") {
+      if (!prompt) {
+        throw new Error("Processing failed");
+      }
+      const result = await this.openRouterProvider.editImage(input, prompt, apiKey);
+      if (!result) {
+        throw new Error("Processing failed");
+      }
+      return this.localImageProvider.normalize(result, outputFormat);
+    }
+
     if (preset === "upscale" && upscaleMode === "ai") {
       const aiResult = await this.openRouterProvider.enhanceImage(input, controls, apiKey);
       if (aiResult) {
