@@ -223,13 +223,47 @@ export class OpenRouterProvider {
       return null;
     }
 
+    const strengthPercent = Math.round(clamp(controls.strength, 0, 100));
+    const prompt = [
+      `Upscale this image to higher resolution.`,
+      `Enhancement strength: ${strengthPercent}%.`,
+      `Preserve identity, composition, colors, and all original content.`,
+      `Do not add, remove, or invent elements.`,
+      `Do not change the aspect ratio.`,
+      `Maintain faithful detail reconstruction.`
+    ].join(" ");
+
+    return this.imageToImage(input, prompt, key);
+  }
+
+  async editImage(
+    input: Buffer,
+    prompt: string,
+    apiKeyOverride?: string
+  ): Promise<Buffer | null> {
+    const key = apiKeyOverride ?? this.apiKey;
+    if (process.env.E2E_FAKE_PROCESSING === "true") {
+      return Buffer.from(input);
+    }
+
+    if (!key) {
+      return null;
+    }
+
+    return this.imageToImage(input, prompt, key);
+  }
+
+  private async imageToImage(
+    input: Buffer,
+    prompt: string,
+    apiKey: string
+  ): Promise<Buffer | null> {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
 
     try {
       const image = await sharp(input).png().toBuffer();
       const dataUrl = `data:image/png;base64,${image.toString("base64")}`;
-      const strengthPercent = Math.round(clamp(controls.strength, 0, 100));
 
       for (let attempt = 0; attempt < 3; attempt += 1) {
         let response: Response;
@@ -239,19 +273,12 @@ export class OpenRouterProvider {
             {
               method: "POST",
               headers: {
-                Authorization: `Bearer ${key}`,
+                Authorization: `Bearer ${apiKey}`,
                 "Content-Type": "application/json"
               },
               body: JSON.stringify({
                 model: this.imageModel,
-                prompt: [
-                  `Upscale this image to higher resolution.`,
-                  `Enhancement strength: ${strengthPercent}%.`,
-                  `Preserve identity, composition, colors, and all original content.`,
-                  `Do not add, remove, or invent elements.`,
-                  `Do not change the aspect ratio.`,
-                  `Maintain faithful detail reconstruction.`
-                ].join(" "),
+                prompt,
                 input_references: [
                   {
                     type: "image_url",

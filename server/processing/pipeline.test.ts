@@ -473,4 +473,58 @@ describe("ProcessingPipeline", () => {
 
     expect(requestUrl).toBe("https://openrouter.ai/api/v1/chat/completions");
   });
+
+  it("uses editImage with the user prompt for the custom preset", async () => {
+    const samplePng = await createSamplePng();
+    const imageFetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      requestUrl = String(input);
+      requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      const b64 = samplePng.toString("base64");
+      return new Response(
+        JSON.stringify({ data: [{ b64_json: b64 }] }),
+        { status: 200 }
+      );
+    });
+    const customPipeline = new ProcessingPipeline(
+      new OpenRouterProvider({ fetch: imageFetchMock, timeoutMs: 100 }),
+      new LocalImageProvider()
+    );
+
+    const output = await customPipeline.process(
+      samplePng,
+      "custom",
+      defaultControls,
+      "png",
+      "classic",
+      undefined,
+      "make the sky purple"
+    );
+
+    expect(requestUrl).toBe("https://openrouter.ai/api/v1/images");
+    expect((requestBody as { prompt: string }).prompt).toBe("make the sky purple");
+    expect(output).toBeInstanceOf(Buffer);
+  });
+
+  it("throws when editImage returns null for custom preset", async () => {
+    const samplePng = await createSamplePng();
+    const nullFetchMock = vi.fn(async () =>
+      new Response(JSON.stringify({ data: [] }), { status: 200 })
+    );
+    const customPipeline = new ProcessingPipeline(
+      new OpenRouterProvider({ fetch: nullFetchMock, timeoutMs: 100 }),
+      new LocalImageProvider()
+    );
+
+    await expect(
+      customPipeline.process(
+        samplePng,
+        "custom",
+        defaultControls,
+        "png",
+        "classic",
+        undefined,
+        "change the background"
+      )
+    ).rejects.toThrow("Processing failed");
+  });
 });
